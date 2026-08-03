@@ -113,6 +113,7 @@ def normalized_announcements(
             "title_ja": str(announcement.get("title_ja") or "").strip(),
             "title_en": str(announcement.get("title_en") or "").strip(),
         })
+    result.sort(key=lambda item: item["date"], reverse=True)
     return result
 
 
