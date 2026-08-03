@@ -1,0 +1,252 @@
+from __future__ import annotations
+
+import argparse
+import base64
+import filecmp
+import json
+import os
+import shutil
+import sys
+import tempfile
+from datetime import datetime, timezone
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+from pathlib import Path, PurePosixPath
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from .manifest import (
+    ManifestError,
+    build_manifest,
+    fetch_manifest,
+    load_private_key,
+    load_public_key,
+    safe_artifact_path,
+    sign_manifest,
+    validate_manifest,
+    verify_artifacts,
+    verify_manifest,
+)
+
+
+def timestamp() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def write_json_atomic(path: Path, value: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as target:
+        json.dump(value, target, ensure_ascii=False, sort_keys=True, indent=2)
+        target.write("\n")
+        temporary = Path(target.name)
+    os.replace(temporary, path)
+
+
+def read_manifest(path: Path) -> dict[str, object]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ManifestError("manifest root must be an object")
+    return value
+
+
+def copy_immutable(source_root: Path, release_root: Path, relative: str) -> None:
+    relative = safe_artifact_path(relative)
+    source = source_root.joinpath(*PurePosixPath(relative).parts)
+    destination = release_root.joinpath(*PurePosixPath(relative).parts)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        if not filecmp.cmp(source, destination, shallow=False):
+            raise ManifestError(f"immutable artifact already differs: {relative}")
+        return
+    shutil.copy2(source, destination)
+
+
+def command_keygen(args: argparse.Namespace) -> None:
+    private = Ed25519PrivateKey.generate()
+    private_raw = private.private_bytes(
+        serialization.Encoding.Raw,
+        serialization.PrivateFormat.Raw,
+        serialization.NoEncryption(),
+    )
+    public_raw = private.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    )
+    args.private_key.parent.mkdir(parents=True, exist_ok=True)
+    args.public_key.parent.mkdir(parents=True, exist_ok=True)
+    args.private_key.write_text(base64.b64encode(private_raw).decode("ascii") + "\n", encoding="ascii")
+    os.chmod(args.private_key, 0o600)
+    args.public_key.write_text(base64.b64encode(public_raw).decode("ascii") + "\n", encoding="ascii")
+
+
+def command_draft(args: argparse.Namespace) -> None:
+    notes = args.notes_file.read_text(encoding="utf-8") if args.notes_file else ""
+    release_root = args.root / "channels" / args.channel / args.platform / "releases" / args.version
+    for relative in args.artifact:
+        copy_immutable(args.source, release_root, relative)
+    manifest = build_manifest(
+        release_root,
+        args.artifact,
+        channel=args.channel,
+        platform=args.platform,
+        version=args.version,
+        published_at=timestamp(),
+        release_notes_markdown=notes,
+        mandatory=args.mandatory,
+        minimum_launcher_version=args.minimum_launcher_version,
+        revoked_versions=args.revoke,
+    )
+    signed = sign_manifest(manifest, load_private_key(args.private_key))
+    target = args.root / "channels" / args.channel / args.platform / "manifests" / f"{args.version}.json"
+    if target.exists() and read_manifest(target) != signed:
+        raise ManifestError("versioned manifest is immutable")
+    write_json_atomic(target, signed)
+    print(target)
+
+
+def verified_manifest(root: Path, path: Path, public_key: Path) -> dict[str, object]:
+    manifest = read_manifest(path)
+    verify_manifest(manifest, load_public_key(public_key))
+    verify_artifacts(root, manifest)
+    return manifest
+
+
+def command_verify(args: argparse.Namespace) -> None:
+    manifest = verified_manifest(args.root, args.manifest, args.public_key)
+    print(f"OK {manifest['channel']} {manifest['platform']} {manifest['version']}")
+
+
+def promote(root: Path, manifest_path: Path, public_key: Path) -> Path:
+    manifest = verified_manifest(root, manifest_path, public_key)
+    target = root / "channels" / manifest["channel"] / manifest["platform"] / "manifest.json"
+    write_json_atomic(target, manifest)
+    return target
+
+
+def command_promote(args: argparse.Namespace) -> None:
+    print(promote(args.root, args.manifest, args.public_key))
+
+
+def command_rollback(args: argparse.Namespace) -> None:
+    manifest = args.root / "channels" / args.channel / args.platform / "manifests" / f"{args.version}.json"
+    print(promote(args.root, manifest, args.public_key))
+
+
+def command_revoke(args: argparse.Namespace) -> None:
+    current = args.root / "channels" / args.channel / args.platform / "manifest.json"
+    manifest = read_manifest(current)
+    validate_manifest(manifest)
+    if str(manifest.get("version") or "") == args.version:
+        raise ManifestError("promote a replacement release before revoking the channel target")
+    revoked = set(str(value) for value in manifest.get("revoked_versions", []))
+    revoked.add(args.version)
+    manifest["revoked_versions"] = sorted(revoked)
+    manifest["mandatory"] = True
+    manifest["published_at"] = timestamp()
+    signed = sign_manifest(manifest, load_private_key(args.private_key))
+    audit = args.root / "channels" / args.channel / args.platform / "revocations" / f"{args.version}-{int(datetime.now().timestamp())}.json"
+    write_json_atomic(audit, signed)
+    write_json_atomic(current, signed)
+    print(current)
+
+
+def command_serve(args: argparse.Namespace) -> None:
+    handler = lambda *values, **kwargs: SimpleHTTPRequestHandler(*values, directory=str(args.root), **kwargs)
+    server = ThreadingHTTPServer((args.bind, args.port), handler)
+    print(f"http://{args.bind}:{server.server_port}")
+    server.serve_forever()
+
+
+def command_probe(args: argparse.Namespace) -> None:
+    manifest, state = fetch_manifest(
+        args.url,
+        load_public_key(args.public_key),
+        timeout=args.timeout,
+        channel=args.channel,
+        platform=args.platform,
+        current_version=args.current_version,
+        launcher_version=args.launcher_version,
+    )
+    print(f"{state} {manifest['version']}")
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(prog="bmsir-arena-patch")
+    commands = result.add_subparsers(dest="command", required=True)
+    keygen = commands.add_parser("keygen")
+    keygen.add_argument("--private-key", type=Path, required=True)
+    keygen.add_argument("--public-key", type=Path, required=True)
+    keygen.set_defaults(run=command_keygen)
+
+    draft = commands.add_parser("draft")
+    draft.add_argument("--root", type=Path, required=True)
+    draft.add_argument("--source", type=Path, required=True)
+    draft.add_argument("--private-key", type=Path, required=True)
+    draft.add_argument("--channel", choices=("stable", "test"), required=True)
+    draft.add_argument("--platform", choices=("windows-x64", "macos-arm64"), required=True)
+    draft.add_argument("--version", required=True)
+    draft.add_argument("--notes-file", type=Path)
+    draft.add_argument("--minimum-launcher-version", default="0.1.0")
+    draft.add_argument("--mandatory", action="store_true")
+    draft.add_argument("--revoke", action="append", default=[])
+    draft.add_argument("--artifact", action="append", required=True)
+    draft.set_defaults(run=command_draft)
+
+    verify = commands.add_parser("verify")
+    verify.add_argument("--root", type=Path, required=True)
+    verify.add_argument("--manifest", type=Path, required=True)
+    verify.add_argument("--public-key", type=Path, required=True)
+    verify.set_defaults(run=command_verify)
+
+    promote_parser = commands.add_parser("promote")
+    promote_parser.add_argument("--root", type=Path, required=True)
+    promote_parser.add_argument("--manifest", type=Path, required=True)
+    promote_parser.add_argument("--public-key", type=Path, required=True)
+    promote_parser.set_defaults(run=command_promote)
+
+    rollback = commands.add_parser("rollback")
+    rollback.add_argument("--root", type=Path, required=True)
+    rollback.add_argument("--channel", choices=("stable", "test"), required=True)
+    rollback.add_argument("--platform", choices=("windows-x64", "macos-arm64"), required=True)
+    rollback.add_argument("--version", required=True)
+    rollback.add_argument("--public-key", type=Path, required=True)
+    rollback.set_defaults(run=command_rollback)
+
+    revoke = commands.add_parser("revoke")
+    revoke.add_argument("--root", type=Path, required=True)
+    revoke.add_argument("--channel", choices=("stable", "test"), required=True)
+    revoke.add_argument("--platform", choices=("windows-x64", "macos-arm64"), required=True)
+    revoke.add_argument("--version", required=True)
+    revoke.add_argument("--private-key", type=Path, required=True)
+    revoke.set_defaults(run=command_revoke)
+
+    serve = commands.add_parser("serve")
+    serve.add_argument("--root", type=Path, required=True)
+    serve.add_argument("--bind", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=0)
+    serve.set_defaults(run=command_serve)
+
+    probe = commands.add_parser("probe")
+    probe.add_argument("--url", required=True)
+    probe.add_argument("--public-key", type=Path, required=True)
+    probe.add_argument("--channel", choices=("stable", "test"), required=True)
+    probe.add_argument("--platform", choices=("windows-x64", "macos-arm64"), required=True)
+    probe.add_argument("--current-version", required=True)
+    probe.add_argument("--launcher-version", default="0.1.0")
+    probe.add_argument("--timeout", type=float, default=10.0)
+    probe.set_defaults(run=command_probe)
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        args = parser().parse_args(argv)
+        args.run(args)
+        return 0
+    except (ManifestError, OSError, json.JSONDecodeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

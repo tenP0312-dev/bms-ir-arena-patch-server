@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bmsir-arena-patch-server"
+version = "0.1.0"
+description = "Signed static patch publication tools for BMS-IR Arena"
+requires-python = ">=3.11"
+dependencies = ["cryptography>=43"]
+
+[project.scripts]
+bmsir-arena-patch = "arena_patch_server.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["arena_patch_server*"]
+
