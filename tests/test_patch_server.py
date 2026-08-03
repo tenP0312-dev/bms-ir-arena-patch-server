@@ -23,6 +23,7 @@ from arena_patch_server.manifest import (
     verify_artifacts,
     verify_manifest,
 )
+from arena_patch_server.cli import command_audit, write_json_atomic
 
 
 class ResponseHandler(BaseHTTPRequestHandler):
@@ -198,6 +199,37 @@ class PatchServerTest(unittest.TestCase):
             serialization.PublicFormat.Raw,
         )
         self.assertEqual(32, len(base64.b64decode(base64.b64encode(raw))))
+
+    def test_publication_audit_rejects_extra_files(self) -> None:
+        publication = self.root / "publication"
+        release = publication / "channels/test/windows-x64/releases/0.4.14"
+        release.mkdir(parents=True)
+        (release / "Arena.jar").write_bytes(b"arena")
+        pointer = publication / "channels/test/windows-x64/manifest.json"
+        versioned = publication / "channels/test/windows-x64/manifests/0.4.14.json"
+        write_json_atomic(pointer, self.signed)
+        write_json_atomic(versioned, self.signed)
+        key_directory = TemporaryDirectory()
+        self.addCleanup(key_directory.cleanup)
+        public_key = Path(key_directory.name) / "test.pub"
+        public_key.write_text(
+            base64.b64encode(
+                self.public.public_bytes(
+                    serialization.Encoding.Raw,
+                    serialization.PublicFormat.Raw,
+                )
+            ).decode("ascii"),
+            encoding="ascii",
+        )
+        args = type("Args", (), {
+            "root": publication,
+            "manifest": pointer,
+            "public_key": public_key,
+        })()
+        command_audit(args)
+        (publication / "extra.txt").write_text("not signed", encoding="utf-8")
+        with self.assertRaisesRegex(ManifestError, "publication tree mismatch"):
+            command_audit(args)
 
 
 if __name__ == "__main__":

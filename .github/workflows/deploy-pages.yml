@@ -1,0 +1,77 @@
+name: Deploy signed test channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: GitHub Release tag containing the signed Pages archive
+        required: true
+        type: string
+      asset_name:
+        description: Release asset name
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+
+      - name: Download signed channel archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          ASSET_NAME: ${{ inputs.asset_name }}
+        run: gh release download "$RELEASE_TAG" --pattern "$ASSET_NAME" --dir download
+
+      - name: Extract and verify exact signed tree
+        env:
+          ARCHIVE: download/${{ inputs.asset_name }}
+          TEST_PUBLIC_KEY: ${{ vars.ARENA_TEST_RELEASE_PUBLIC_KEY }}
+        run: |
+          test -n "$TEST_PUBLIC_KEY"
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import tarfile
+
+          archive = Path(os.environ["ARCHIVE"])
+          site = Path("site")
+          site.mkdir()
+          with tarfile.open(archive, "r:gz") as source:
+              source.extractall(site, filter="data")
+
+          Path("test-public-key.txt").write_text(
+              os.environ["TEST_PUBLIC_KEY"].strip() + "\n",
+              encoding="ascii",
+          )
+          PY
+          bmsir-arena-patch audit \
+            --root site \
+            --manifest site/channels/test/windows-x64/manifest.json \
+            --public-key test-public-key.txt
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
