@@ -80,7 +80,21 @@ def command_keygen(args: argparse.Namespace) -> None:
 
 
 def command_draft(args: argparse.Namespace) -> None:
+    if args.notes_file and (args.notes_ja_file or args.notes_en_file):
+        raise ManifestError("--notes-file cannot be combined with localized notes")
+    if bool(args.notes_ja_file) != bool(args.notes_en_file):
+        raise ManifestError("both --notes-ja-file and --notes-en-file are required")
     notes = args.notes_file.read_text(encoding="utf-8") if args.notes_file else ""
+    notes_ja = args.notes_ja_file.read_text(encoding="utf-8") if args.notes_ja_file else notes
+    notes_en = args.notes_en_file.read_text(encoding="utf-8") if args.notes_en_file else notes
+    if args.notes_ja_file:
+        notes = f"{notes_ja.rstrip()}\n\n---\n\n{notes_en.lstrip()}"
+    announcements: list[dict[str, object]] = []
+    if args.announcements_file:
+        value = json.loads(args.announcements_file.read_text(encoding="utf-8"))
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise ManifestError("announcements file must contain an array of objects")
+        announcements = value
     release_root = args.root / "channels" / args.channel / args.platform / "releases" / args.version
     for relative in args.artifact:
         copy_immutable(args.source, release_root, relative)
@@ -92,6 +106,9 @@ def command_draft(args: argparse.Namespace) -> None:
         version=args.version,
         published_at=timestamp(),
         release_notes_markdown=notes,
+        release_notes_markdown_ja=notes_ja,
+        release_notes_markdown_en=notes_en,
+        announcements=announcements,
         mandatory=args.mandatory,
         minimum_launcher_version=args.minimum_launcher_version,
         revoked_versions=args.revoke,
@@ -219,6 +236,9 @@ def parser() -> argparse.ArgumentParser:
     draft.add_argument("--platform", choices=("windows-x64", "macos-arm64"), required=True)
     draft.add_argument("--version", required=True)
     draft.add_argument("--notes-file", type=Path)
+    draft.add_argument("--notes-ja-file", type=Path)
+    draft.add_argument("--notes-en-file", type=Path)
+    draft.add_argument("--announcements-file", type=Path)
     draft.add_argument("--minimum-launcher-version", default="0.1.0")
     draft.add_argument("--mandatory", action="store_true")
     draft.add_argument("--revoke", action="append", default=[])

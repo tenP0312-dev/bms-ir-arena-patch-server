@@ -23,7 +23,7 @@ from arena_patch_server.manifest import (
     verify_artifacts,
     verify_manifest,
 )
-from arena_patch_server.cli import command_audit, write_json_atomic
+from arena_patch_server.cli import command_audit, command_draft, write_json_atomic
 
 
 class ResponseHandler(BaseHTTPRequestHandler):
@@ -64,6 +64,13 @@ class PatchServerTest(unittest.TestCase):
             version="0.4.14",
             published_at="2026-08-03T00:00:00Z",
             release_notes_markdown="## Test\n- Portable",
+            release_notes_markdown_ja="## テスト\n- ポータブル",
+            release_notes_markdown_en="## Test\n- Portable",
+            announcements=[{
+                "date": "2026-08-03",
+                "title_ja": "テスト配信を開始しました",
+                "title_en": "Internal testing is now available",
+            }],
         )
         self.signed = sign_manifest(self.manifest, self.private)
 
@@ -88,12 +95,106 @@ class PatchServerTest(unittest.TestCase):
         with self.assertRaisesRegex(ManifestError, "signature"):
             verify_manifest(tampered, self.public)
 
+    def test_localized_release_notes_and_announcements_are_signed(self) -> None:
+        verify_manifest(self.signed, self.public)
+        self.assertIn("ポータブル", self.signed["release_notes_markdown_ja"])
+        self.assertIn("Portable", self.signed["release_notes_markdown_en"])
+        self.assertEqual("2026-08-03", self.signed["announcements"][0]["date"])
+
+        tampered = json.loads(json.dumps(self.signed))
+        tampered["announcements"][0]["title_ja"] = "改ざん"
+        with self.assertRaisesRegex(ManifestError, "signature"):
+            verify_manifest(tampered, self.public)
+
+    def test_legacy_release_notes_remain_valid(self) -> None:
+        legacy = dict(self.signed)
+        legacy.pop("release_notes_markdown_ja")
+        legacy.pop("release_notes_markdown_en")
+        legacy.pop("announcements")
+        legacy = sign_manifest(legacy, self.private)
+        verify_manifest(legacy, self.public)
+
+    def test_invalid_announcements_are_rejected(self) -> None:
+        source = self.root / "source"
+        cases = (
+            [{"date": "2026/08/03", "title_ja": "告知", "title_en": "Notice"}],
+            [{"date": "2026-13-40", "title_ja": "告知", "title_en": "Notice"}],
+            [{"date": "2026-08-03", "title_ja": "", "title_en": "Notice"}],
+            [{"date": "2026-08-03", "title_ja": "告知", "title_en": "x" * 201}],
+        )
+        for announcements in cases:
+            with self.assertRaises(ManifestError):
+                build_manifest(
+                    source,
+                    ["Arena.jar"],
+                    channel="test",
+                    platform="windows-x64",
+                    version="0.4.14",
+                    published_at="2026-08-03T00:00:00Z",
+                    announcements=announcements,
+                )
+
+    def test_draft_cli_reads_localized_notes_and_announcements(self) -> None:
+        source = self.root / "cli-source"
+        source.mkdir()
+        (source / "Arena.jar").write_bytes(b"arena")
+        private_key = self.root / "test.key"
+        private_key.write_text(
+            base64.b64encode(
+                self.private.private_bytes(
+                    serialization.Encoding.Raw,
+                    serialization.PrivateFormat.Raw,
+                    serialization.NoEncryption(),
+                )
+            ).decode("ascii"),
+            encoding="ascii",
+        )
+        notes_ja = self.root / "notes-ja.md"
+        notes_en = self.root / "notes-en.md"
+        announcements = self.root / "announcements.json"
+        notes_ja.write_text("## 更新\n- 日本語", encoding="utf-8")
+        notes_en.write_text("## Update\n- English", encoding="utf-8")
+        announcements.write_text(json.dumps([{
+            "date": "2026-08-03",
+            "title_ja": "更新のお知らせ",
+            "title_en": "Update notice",
+        }]), encoding="utf-8")
+        args = type("Args", (), {
+            "root": self.root / "publication",
+            "source": source,
+            "private_key": private_key,
+            "channel": "test",
+            "platform": "windows-x64",
+            "version": "0.4.14.4",
+            "notes_file": None,
+            "notes_ja_file": notes_ja,
+            "notes_en_file": notes_en,
+            "announcements_file": announcements,
+            "mandatory": True,
+            "minimum_launcher_version": "0.2.4",
+            "revoke": [],
+            "artifact": ["Arena.jar"],
+        })()
+        command_draft(args)
+        manifest_path = (
+            args.root / "channels/test/windows-x64/manifests/0.4.14.4.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        verify_manifest(manifest, self.public)
+        self.assertIn("日本語", manifest["release_notes_markdown"])
+        self.assertIn("English", manifest["release_notes_markdown"])
+        self.assertEqual("## 更新\n- 日本語", manifest["release_notes_markdown_ja"])
+        self.assertEqual("Update notice", manifest["announcements"][0]["title_en"])
+        self.assertTrue(manifest["mandatory"])
+
     def test_mutable_player_data_cannot_be_a_release_artifact(self) -> None:
         for value in (
             "player/player1/score.db",
             "score.db",
             "config_sys.json",
             "bmsir-arena-version.txt",
+            ".bmsir-launcher-policy.json",
+            ".bmsir-launcher-policy.tmp",
             ".bmsir-update-staging/file",
         ):
             with self.assertRaisesRegex(ManifestError, "unsafe artifact path"):
