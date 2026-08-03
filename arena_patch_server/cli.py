@@ -117,19 +117,27 @@ def command_verify(args: argparse.Namespace) -> None:
 
 
 def command_audit(args: argparse.Namespace) -> None:
-    manifest = verified_manifest(args.root, args.manifest, args.public_key)
-    base = PurePosixPath("channels") / str(manifest["channel"]) / str(manifest["platform"])
-    versioned_relative = base / "manifests" / f"{manifest['version']}.json"
-    versioned_path = args.root.joinpath(*versioned_relative.parts)
-    if not versioned_path.is_file() or read_manifest(versioned_path) != manifest:
-        raise ManifestError("versioned manifest does not match the channel pointer")
-    expected = {
-        (base / "manifest.json").as_posix(),
-        versioned_relative.as_posix(),
-    }
-    release_base = base / "releases" / str(manifest["version"])
-    for artifact in manifest["artifacts"]:
-        expected.add((release_base / safe_artifact_path(str(artifact["path"]))).as_posix())
+    manifest_paths = args.manifest if isinstance(args.manifest, list) else [args.manifest]
+    expected: set[str] = set()
+    audited: list[str] = []
+    for manifest_path in manifest_paths:
+        manifest = verified_manifest(args.root, manifest_path, args.public_key)
+        base = PurePosixPath("channels") / str(manifest["channel"]) / str(manifest["platform"])
+        pointer_relative = base / "manifest.json"
+        versioned_relative = base / "manifests" / f"{manifest['version']}.json"
+        pointer_path = args.root.joinpath(*pointer_relative.parts)
+        versioned_path = args.root.joinpath(*versioned_relative.parts)
+        if pointer_path.resolve() != manifest_path.resolve():
+            raise ManifestError("audit manifest must be the channel pointer")
+        if not versioned_path.is_file() or read_manifest(versioned_path) != manifest:
+            raise ManifestError("versioned manifest does not match the channel pointer")
+        expected.update({pointer_relative.as_posix(), versioned_relative.as_posix()})
+        release_base = base / "releases" / str(manifest["version"])
+        for artifact in manifest["artifacts"]:
+            expected.add(
+                (release_base / safe_artifact_path(str(artifact["path"]))).as_posix()
+            )
+        audited.append(f"{manifest['channel']} {manifest['platform']} {manifest['version']}")
     paths = list(args.root.rglob("*"))
     if any(path.is_symlink() for path in paths):
         raise ManifestError("publication tree contains a symlink")
@@ -138,7 +146,7 @@ def command_audit(args: argparse.Namespace) -> None:
         missing = sorted(expected - actual)
         extra = sorted(actual - expected)
         raise ManifestError(f"publication tree mismatch: missing={missing} extra={extra}")
-    print(f"AUDIT OK {manifest['channel']} {manifest['platform']} {manifest['version']}")
+    print("AUDIT OK " + "; ".join(audited))
 
 
 def promote(root: Path, manifest_path: Path, public_key: Path) -> Path:
@@ -225,7 +233,7 @@ def parser() -> argparse.ArgumentParser:
 
     audit = commands.add_parser("audit")
     audit.add_argument("--root", type=Path, required=True)
-    audit.add_argument("--manifest", type=Path, required=True)
+    audit.add_argument("--manifest", type=Path, action="append", required=True)
     audit.add_argument("--public-key", type=Path, required=True)
     audit.set_defaults(run=command_audit)
 

@@ -11,6 +11,9 @@ channels/test/windows-x64/manifest.json
 channels/test/windows-x64/manifests/0.4.14.json
 channels/test/windows-x64/releases/0.4.14/BMS-IR Arena Test.exe
 channels/test/windows-x64/releases/0.4.14/Arena-oraja.jar
+channels/test/macos-arm64/manifest.json
+channels/test/macos-arm64/manifests/0.4.14.json
+channels/test/macos-arm64/releases/0.4.14/BMS-IR Arena Test.app/Contents/MacOS/bmsir-arena-launcher
 ```
 
 The manifest is canonical JSON signed with Ed25519. Every artifact path,
@@ -50,6 +53,18 @@ bmsir-arena-patch verify \
   --manifest dist/channels/test/windows-x64/manifests/0.4.14.json \
   --public-key public/test.pub
 
+bmsir-arena-patch draft \
+  --root dist \
+  --source package/macos \
+  --private-key private-keys/test.key \
+  --channel test \
+  --platform macos-arm64 \
+  --version 0.4.14 \
+  --notes-file release-notes.md \
+  --artifact "BMS-IR Arena Test.app/Contents/Info.plist" \
+  --artifact "BMS-IR Arena Test.app/Contents/Resources/icon.icns" \
+  --artifact "BMS-IR Arena Test.app/Contents/MacOS/bmsir-arena-launcher"
+
 bmsir-arena-patch promote \
   --root dist \
   --manifest dist/channels/test/windows-x64/manifests/0.4.14.json \
@@ -78,11 +93,21 @@ The repository's GitHub Pages site serves the generated tree at
 complete generated `dist/` tree as a `.tar.gz` GitHub pre-release asset, then
 manually dispatch `Deploy signed test channel` with that tag and asset name.
 The workflow extracts the archive safely, rejects unlisted files and symlinks,
-verifies the manifest signature and every artifact, and only then deploys it.
+verifies both Windows and macOS manifest signatures and every artifact, and
+only then deploys it.
 Release binaries remain outside Git history, and the normal public download
 page and changelog do not link the internal test channel.
 
-The same exact-tree check is available locally as `bmsir-arena-patch audit`.
+The same exact-tree check is available locally by passing every channel pointer
+to one `bmsir-arena-patch audit` invocation:
+
+```sh
+bmsir-arena-patch audit \
+  --root dist \
+  --manifest dist/channels/test/windows-x64/manifest.json \
+  --manifest dist/channels/test/macos-arm64/manifest.json \
+  --public-key public/test.pub
+```
 
 The configured internal launcher is compiled with that HTTPS base URL and the
 matching disposable test public key. Keep the private key outside every Git

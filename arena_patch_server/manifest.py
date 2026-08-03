@@ -90,7 +90,10 @@ def file_artifact(root: Path, relative: str) -> dict[str, object]:
         "path": relative,
         "sha256": digest.hexdigest(),
         "size": size,
-        "executable": relative.lower().endswith((".exe", ".sh")),
+        "executable": (
+            relative.lower().endswith((".exe", ".sh", ".command"))
+            or bool(path.stat().st_mode & 0o111)
+        ),
     }
 
 
