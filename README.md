@@ -18,8 +18,10 @@ channels/test/macos-arm64/releases/0.4.14/BMS-IR Arena Test.app/Contents/MacOS/b
 
 The manifest is canonical JSON signed with Ed25519. Every artifact path,
 SHA-256, size, channel, platform, mandatory flag, minimum launcher version,
-revocation list, and release note is covered by the signature. Artifact paths
-are relative and release directories are immutable.
+revocation list, Japanese/English release notes, and announcement list is
+covered by the signature. Artifact paths are relative and release directories
+are immutable. Older manifests that only contain `release_notes_markdown`
+remain valid; current launchers use it as the fallback for both languages.
 
 Player profiles, BMS data, replays, score databases, configuration files, the
 local version marker, staging data, and launcher backups are rejected as patch
@@ -44,7 +46,9 @@ bmsir-arena-patch draft \
   --channel test \
   --platform windows-x64 \
   --version 0.4.14 \
-  --notes-file release-notes.md \
+  --notes-ja-file release-notes-ja.md \
+  --notes-en-file release-notes-en.md \
+  --announcements-file announcements.json \
   --artifact "BMS-IR Arena Test.exe" \
   --artifact Arena-oraja.jar
 
@@ -60,7 +64,9 @@ bmsir-arena-patch draft \
   --channel test \
   --platform macos-arm64 \
   --version 0.4.14 \
-  --notes-file release-notes.md \
+  --notes-ja-file release-notes-ja.md \
+  --notes-en-file release-notes-en.md \
+  --announcements-file announcements.json \
   --artifact "BMS-IR Arena Test.app/Contents/Info.plist" \
   --artifact "BMS-IR Arena Test.app/Contents/Resources/icon.icns" \
   --artifact "BMS-IR Arena Test.app/Contents/MacOS/bmsir-arena-launcher"
@@ -74,6 +80,25 @@ bmsir-arena-patch promote \
 `rollback` repoints the channel to a verified older versioned manifest.
 `revoke` adds a version to the signed revocation list and makes the channel
 mandatory. Both operations still require an explicit operator command.
+
+`announcements.json` is a newest-first array. Every item requires a real ISO
+date and both titles; at most 20 entries are accepted:
+
+```json
+[
+  {
+    "date": "2026-08-03",
+    "title_ja": "Arena oraja 0.4.14.4 テスト開始",
+    "title_en": "Arena oraja 0.4.14.4 testing is now available"
+  }
+]
+```
+
+Use `--mandatory` only when the installed version must not start. A verified
+mandatory decision is cached by the launcher and remains enforced if a later
+network check fails. Arena service compatibility remains the final gate for a
+client that has never received the mandatory manifest or whose local files
+were manually altered.
 
 For local testing:
 

@@ -6,8 +6,9 @@ import json
 import re
 import urllib.error
 import urllib.request
+from datetime import date as calendar_date
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -19,6 +20,10 @@ VALID_CHANNELS = {"stable", "test"}
 VALID_PLATFORMS = {"windows-x64", "macos-arm64"}
 MAX_MANIFEST_BYTES = 1024 * 1024
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+ANNOUNCEMENT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+MAX_RELEASE_NOTES_BYTES = 64 * 1024
+MAX_ANNOUNCEMENTS = 20
+MAX_ANNOUNCEMENT_TITLE = 200
 
 
 class ManifestError(ValueError):
@@ -68,7 +73,8 @@ def safe_artifact_path(value: object) -> str:
         or path.name.casefold() in {
             "config_sys.json", "config_player.json", "score.db",
             "songdata.db", "bmsir_maniac.db", "bmsir_arena.json",
-            "bmsir-arena-version.txt",
+            "bmsir-arena-version.txt", ".bmsir-launcher-policy.json",
+            ".bmsir-launcher-policy.tmp",
         }
     ):
         raise ManifestError(f"unsafe artifact path: {text}")
@@ -97,6 +103,61 @@ def file_artifact(root: Path, relative: str) -> dict[str, object]:
     }
 
 
+def normalized_announcements(
+    announcements: Iterable[Mapping[str, object]],
+) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for announcement in announcements:
+        result.append({
+            "date": str(announcement.get("date") or "").strip(),
+            "title_ja": str(announcement.get("title_ja") or "").strip(),
+            "title_en": str(announcement.get("title_en") or "").strip(),
+        })
+    result.sort(key=lambda item: item["date"], reverse=True)
+    return result
+
+
+def validate_localized_content(manifest: Mapping[str, object]) -> None:
+    for field in (
+        "release_notes_markdown",
+        "release_notes_markdown_ja",
+        "release_notes_markdown_en",
+    ):
+        value = manifest.get(field, "")
+        if not isinstance(value, str):
+            raise ManifestError(f"{field} must be a string")
+        if len(value.encode("utf-8")) > MAX_RELEASE_NOTES_BYTES:
+            raise ManifestError(f"{field} is too large")
+
+    announcements = manifest.get("announcements", [])
+    if not isinstance(announcements, list):
+        raise ManifestError("announcements must be an array")
+    if len(announcements) > MAX_ANNOUNCEMENTS:
+        raise ManifestError("too many announcements")
+    for announcement in announcements:
+        if not isinstance(announcement, dict):
+            raise ManifestError("announcement must be an object")
+        if set(announcement) != {"date", "title_ja", "title_en"}:
+            raise ManifestError("announcement fields are invalid")
+        date = announcement.get("date")
+        title_ja = announcement.get("title_ja")
+        title_en = announcement.get("title_en")
+        if not isinstance(date, str) or not ANNOUNCEMENT_DATE_RE.fullmatch(date):
+            raise ManifestError("announcement date must use YYYY-MM-DD")
+        try:
+            calendar_date.fromisoformat(date)
+        except ValueError as exc:
+            raise ManifestError("announcement date is invalid") from exc
+        for field, title in (("title_ja", title_ja), ("title_en", title_en)):
+            if (
+                not isinstance(title, str)
+                or not title.strip()
+                or len(title) > MAX_ANNOUNCEMENT_TITLE
+                or any(ord(character) < 32 for character in title)
+            ):
+                raise ManifestError(f"announcement {field} is invalid")
+
+
 def build_manifest(
     source_root: Path,
     artifacts: Iterable[str],
@@ -106,6 +167,9 @@ def build_manifest(
     version: str,
     published_at: str,
     release_notes_markdown: str = "",
+    release_notes_markdown_ja: str | None = None,
+    release_notes_markdown_en: str | None = None,
+    announcements: Iterable[Mapping[str, object]] = (),
     mandatory: bool = False,
     minimum_launcher_version: str = "0.1.0",
     revoked_versions: Iterable[str] = (),
@@ -117,6 +181,17 @@ def build_manifest(
         "version": str(version).strip(),
         "published_at": str(published_at).strip(),
         "release_notes_markdown": str(release_notes_markdown),
+        "release_notes_markdown_ja": str(
+            release_notes_markdown
+            if release_notes_markdown_ja is None
+            else release_notes_markdown_ja
+        ),
+        "release_notes_markdown_en": str(
+            release_notes_markdown
+            if release_notes_markdown_en is None
+            else release_notes_markdown_en
+        ),
+        "announcements": normalized_announcements(announcements),
         "mandatory": bool(mandatory),
         "minimum_launcher_version": str(minimum_launcher_version).strip(),
         "revoked_versions": sorted({str(value).strip() for value in revoked_versions if str(value).strip()}),
@@ -149,6 +224,7 @@ def validate_manifest(manifest: dict[str, Any], *, require_signature: bool = Tru
         raise ManifestError("mandatory must be boolean")
     if not isinstance(manifest.get("revoked_versions"), list):
         raise ManifestError("revoked_versions must be an array")
+    validate_localized_content(manifest)
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list):
         raise ManifestError("artifacts must be an array")
