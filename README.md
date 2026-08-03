@@ -71,14 +71,18 @@ bmsir-arena-patch probe \
   --current-version 0.4.13
 ```
 
-## BMS-IR test-channel hosting
+## GitHub Pages test-channel hosting
 
-The BMS-IR backend serves the generated tree from its untracked
-`tools/lr2ir_compat_data/arena_patches` directory at
-`https://www.bms-ir.org/new/arena/patches/`. Copy the complete generated
-`dist/` contents there only after `verify` and `promote` succeed. The source
-repository, public download page, and changelog do not contain or link the
-internal test artifacts.
+The repository's GitHub Pages site serves the generated tree at
+`https://tenp0312-dev.github.io/bms-ir-arena-patch-server/`. Package the
+complete generated `dist/` tree as a `.tar.gz` GitHub pre-release asset, then
+manually dispatch `Deploy signed test channel` with that tag and asset name.
+The workflow extracts the archive safely, rejects unlisted files and symlinks,
+verifies the manifest signature and every artifact, and only then deploys it.
+Release binaries remain outside Git history, and the normal public download
+page and changelog do not link the internal test channel.
+
+The same exact-tree check is available locally as `bmsir-arena-patch audit`.
 
 The configured internal launcher is compiled with that HTTPS base URL and the
 matching disposable test public key. Keep the private key outside every Git

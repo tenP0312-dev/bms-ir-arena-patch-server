@@ -116,6 +116,31 @@ def command_verify(args: argparse.Namespace) -> None:
     print(f"OK {manifest['channel']} {manifest['platform']} {manifest['version']}")
 
 
+def command_audit(args: argparse.Namespace) -> None:
+    manifest = verified_manifest(args.root, args.manifest, args.public_key)
+    base = PurePosixPath("channels") / str(manifest["channel"]) / str(manifest["platform"])
+    versioned_relative = base / "manifests" / f"{manifest['version']}.json"
+    versioned_path = args.root.joinpath(*versioned_relative.parts)
+    if not versioned_path.is_file() or read_manifest(versioned_path) != manifest:
+        raise ManifestError("versioned manifest does not match the channel pointer")
+    expected = {
+        (base / "manifest.json").as_posix(),
+        versioned_relative.as_posix(),
+    }
+    release_base = base / "releases" / str(manifest["version"])
+    for artifact in manifest["artifacts"]:
+        expected.add((release_base / safe_artifact_path(str(artifact["path"]))).as_posix())
+    paths = list(args.root.rglob("*"))
+    if any(path.is_symlink() for path in paths):
+        raise ManifestError("publication tree contains a symlink")
+    actual = {path.relative_to(args.root).as_posix() for path in paths if path.is_file()}
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise ManifestError(f"publication tree mismatch: missing={missing} extra={extra}")
+    print(f"AUDIT OK {manifest['channel']} {manifest['platform']} {manifest['version']}")
+
+
 def promote(root: Path, manifest_path: Path, public_key: Path) -> Path:
     manifest = verified_manifest(root, manifest_path, public_key)
     target = root / "channels" / manifest["channel"] / manifest["platform"] / "manifest.json"
@@ -197,6 +222,12 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--manifest", type=Path, required=True)
     verify.add_argument("--public-key", type=Path, required=True)
     verify.set_defaults(run=command_verify)
+
+    audit = commands.add_parser("audit")
+    audit.add_argument("--root", type=Path, required=True)
+    audit.add_argument("--manifest", type=Path, required=True)
+    audit.add_argument("--public-key", type=Path, required=True)
+    audit.set_defaults(run=command_audit)
 
     promote_parser = commands.add_parser("promote")
     promote_parser.add_argument("--root", type=Path, required=True)
