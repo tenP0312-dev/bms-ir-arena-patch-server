@@ -108,6 +108,28 @@ class PatchServerTest(unittest.TestCase):
         with self.assertRaisesRegex(ManifestError, "mismatch"):
             verify_artifacts(self.root, self.signed)
 
+    def test_macos_bundle_binary_preserves_executable_flag(self) -> None:
+        source = self.root / "mac-source"
+        executable = (
+            source
+            / "BMS-IR Arena Test.app"
+            / "Contents"
+            / "MacOS"
+            / "bmsir-arena-launcher"
+        )
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"launcher")
+        executable.chmod(0o755)
+        manifest = build_manifest(
+            source,
+            ["BMS-IR Arena Test.app/Contents/MacOS/bmsir-arena-launcher"],
+            channel="test",
+            platform="macos-arm64",
+            version="0.4.14.3",
+            published_at="2026-08-03T00:00:00Z",
+        )
+        self.assertTrue(manifest["artifacts"][0]["executable"])
+
     def test_fetch_reports_available_and_stale(self) -> None:
         server, url = self.serve()
         try:
@@ -230,6 +252,61 @@ class PatchServerTest(unittest.TestCase):
         (publication / "extra.txt").write_text("not signed", encoding="utf-8")
         with self.assertRaisesRegex(ManifestError, "publication tree mismatch"):
             command_audit(args)
+
+    def test_publication_audit_accepts_exact_multi_platform_tree(self) -> None:
+        publication = self.root / "multi-publication"
+        windows_release = publication / "channels/test/windows-x64/releases/0.4.14"
+        windows_release.mkdir(parents=True)
+        (windows_release / "Arena.jar").write_bytes(b"arena")
+        windows_pointer = publication / "channels/test/windows-x64/manifest.json"
+        windows_versioned = publication / "channels/test/windows-x64/manifests/0.4.14.json"
+        write_json_atomic(windows_pointer, self.signed)
+        write_json_atomic(windows_versioned, self.signed)
+
+        mac_source = self.root / "mac-publication-source"
+        mac_source.mkdir()
+        (mac_source / "Arena.jar").write_bytes(b"mac-arena")
+        mac_manifest = sign_manifest(
+            build_manifest(
+                mac_source,
+                ["Arena.jar"],
+                channel="test",
+                platform="macos-arm64",
+                version="0.4.14",
+                published_at="2026-08-03T00:00:00Z",
+            ),
+            self.private,
+        )
+        mac_release = publication / "channels/test/macos-arm64/releases/0.4.14"
+        mac_release.mkdir(parents=True)
+        (mac_release / "Arena.jar").write_bytes(b"mac-arena")
+        mac_pointer = publication / "channels/test/macos-arm64/manifest.json"
+        mac_versioned = publication / "channels/test/macos-arm64/manifests/0.4.14.json"
+        write_json_atomic(mac_pointer, mac_manifest)
+        write_json_atomic(mac_versioned, mac_manifest)
+
+        key_directory = TemporaryDirectory()
+        self.addCleanup(key_directory.cleanup)
+        public_key = Path(key_directory.name) / "test.pub"
+        public_key.write_text(
+            base64.b64encode(
+                self.public.public_bytes(
+                    serialization.Encoding.Raw,
+                    serialization.PublicFormat.Raw,
+                )
+            ).decode("ascii"),
+            encoding="ascii",
+        )
+        args = type(
+            "Args",
+            (),
+            {
+                "root": publication,
+                "manifest": [windows_pointer, mac_pointer],
+                "public_key": public_key,
+            },
+        )()
+        command_audit(args)
 
 
 if __name__ == "__main__":

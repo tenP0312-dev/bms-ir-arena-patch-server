@@ -66,6 +66,7 @@ jobs:
           bmsir-arena-patch audit \
             --root site \
             --manifest site/channels/test/windows-x64/manifest.json \
+            --manifest site/channels/test/macos-arm64/manifest.json \
             --public-key test-public-key.txt
 
       - uses: actions/configure-pages@v5
