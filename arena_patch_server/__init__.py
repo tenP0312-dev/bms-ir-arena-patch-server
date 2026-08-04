@@ -3,6 +3,7 @@
 from .manifest import (
     ManifestError,
     build_manifest,
+    bootstrap_metadata,
     canonical_bytes,
     check_update,
     load_private_key,
@@ -14,6 +15,7 @@ from .manifest import (
 __all__ = [
     "ManifestError",
     "build_manifest",
+    "bootstrap_metadata",
     "canonical_bytes",
     "check_update",
     "load_private_key",
@@ -21,4 +23,3 @@ __all__ = [
     "sign_manifest",
     "verify_manifest",
 ]
-

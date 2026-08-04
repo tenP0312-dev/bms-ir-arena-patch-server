@@ -16,7 +16,10 @@ channels/test/macos-arm64/manifests/0.4.14.json
 channels/test/macos-arm64/releases/0.4.14/BMS-IR Arena Test.app/Contents/MacOS/bmsir-arena-launcher
 ```
 
-The manifest is canonical JSON signed with Ed25519. Every artifact path,
+The manifest is canonical JSON signed with Ed25519. `artifacts` is the sparse
+delta for the current version. An optional `bootstrap` contains an HTTPS ZIP
+URL, ZIP size and SHA-256, and the full installation inventory used only when
+the launcher is in an empty directory. Every artifact path,
 SHA-256, size, channel, platform, mandatory flag, minimum launcher version,
 revocation list, Japanese/English release notes, and announcement list is
 covered by the signature. Artifact paths are relative and release directories
@@ -45,16 +48,18 @@ bmsir-arena-patch draft \
   --private-key private-keys/test.key \
   --channel test \
   --platform windows-x64 \
-  --version 0.4.14 \
+  --version 0.4.14.9 \
   --notes-ja-file release-notes-ja.md \
   --notes-en-file release-notes-en.md \
   --announcements-file announcements.json \
-  --artifact "BMS-IR Arena Test.exe" \
-  --artifact Arena-oraja.jar
+  --bootstrap-manifest previous-windows-manifest.json \
+  --bootstrap-archive BMS-IR-Arena-oraja-0.4.14.8-windows-test-java21.zip \
+  --bootstrap-url https://github.com/example/releases/download/test-0.4.14.8/BMS-IR-Arena-oraja-0.4.14.8-windows-test-java21.zip \
+  --artifact "BMS-IR Arena Test.exe"
 
 bmsir-arena-patch verify \
   --root dist \
-  --manifest dist/channels/test/windows-x64/manifests/0.4.14.json \
+  --manifest dist/channels/test/windows-x64/manifests/0.4.14.9.json \
   --public-key public/test.pub
 
 bmsir-arena-patch draft \
@@ -63,21 +68,34 @@ bmsir-arena-patch draft \
   --private-key private-keys/test.key \
   --channel test \
   --platform macos-arm64 \
-  --version 0.4.14 \
+  --version 0.4.14.9 \
   --notes-ja-file release-notes-ja.md \
   --notes-en-file release-notes-en.md \
   --announcements-file announcements.json \
+  --bootstrap-manifest previous-macos-manifest.json \
+  --bootstrap-archive BMS-IR-Arena-oraja-0.4.14.8-macos-test-java21.zip \
+  --bootstrap-url https://github.com/example/releases/download/test-0.4.14.8/BMS-IR-Arena-oraja-0.4.14.8-macos-test-java21.zip \
   --artifact "BMS-IR Arena Test.app/Contents/Info.plist" \
   --artifact "BMS-IR Arena Test.app/Contents/Resources/icon.icns" \
   --artifact "BMS-IR Arena Test.app/Contents/MacOS/bmsir-arena-launcher"
 
 bmsir-arena-patch promote \
   --root dist \
-  --manifest dist/channels/test/windows-x64/manifests/0.4.14.json \
+  --manifest dist/channels/test/windows-x64/manifests/0.4.14.9.json \
   --public-key public/test.pub
 ```
 
-`rollback` repoints the channel to a verified older versioned manifest.
+The bootstrap archive is read once while drafting. Every ZIP member must match
+the previous full manifest; unknown paths, symlinks, missing files, incorrect
+hashes, and missing executable bits are rejected. The archive itself is not
+copied into the Pages tree. Its signed HTTPS URL normally points to an
+immutable GitHub Release asset.
+
+`rollback` repoints the channel to a verified older versioned manifest only
+when that release's immutable files are still in the deployed tree. Sparse
+Pages releases deliberately contain only their current delta, so operational
+rollback is performed by redeploying the complete previously archived Pages
+asset rather than repointing inside the current sparse tree.
 `revoke` adds a version to the signed revocation list and makes the channel
 mandatory. Both operations still require an explicit operator command.
 
@@ -114,8 +132,8 @@ bmsir-arena-patch probe \
 ## GitHub Pages test-channel hosting
 
 The repository's GitHub Pages site serves the generated tree at
-`https://tenp0312-dev.github.io/bms-ir-arena-patch-server/`. Package the
-complete generated `dist/` tree as a `.tar.gz` GitHub pre-release asset, then
+`https://tenp0312-dev.github.io/bms-ir-arena-patch-server/`. Package the exact
+generated sparse `dist/` tree as a `.tar.gz` GitHub pre-release asset, then
 manually dispatch `Deploy signed test channel` with that tag and asset name.
 The workflow extracts the archive safely, rejects unlisted files and symlinks,
 verifies both Windows and macOS manifest signatures and every artifact, and

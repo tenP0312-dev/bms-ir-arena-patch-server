@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .manifest import (
     ManifestError,
+    bootstrap_metadata,
     build_manifest,
     fetch_manifest,
     load_private_key,
@@ -95,6 +96,22 @@ def command_draft(args: argparse.Namespace) -> None:
         if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
             raise ManifestError("announcements file must contain an array of objects")
         announcements = value
+    bootstrap_values = (
+        getattr(args, "bootstrap_manifest", None),
+        getattr(args, "bootstrap_archive", None),
+        getattr(args, "bootstrap_url", None),
+    )
+    if any(bootstrap_values) and not all(bootstrap_values):
+        raise ManifestError(
+            "--bootstrap-manifest, --bootstrap-archive, and --bootstrap-url are required together"
+        )
+    bootstrap = None
+    if all(bootstrap_values):
+        bootstrap = bootstrap_metadata(
+            args.bootstrap_archive,
+            args.bootstrap_url,
+            read_manifest(args.bootstrap_manifest),
+        )
     release_root = args.root / "channels" / args.channel / args.platform / "releases" / args.version
     for relative in args.artifact:
         copy_immutable(args.source, release_root, relative)
@@ -112,6 +129,7 @@ def command_draft(args: argparse.Namespace) -> None:
         mandatory=args.mandatory,
         minimum_launcher_version=args.minimum_launcher_version,
         revoked_versions=args.revoke,
+        bootstrap=bootstrap,
     )
     signed = sign_manifest(manifest, load_private_key(args.private_key))
     target = args.root / "channels" / args.channel / args.platform / "manifests" / f"{args.version}.json"
@@ -242,6 +260,9 @@ def parser() -> argparse.ArgumentParser:
     draft.add_argument("--minimum-launcher-version", default="0.1.0")
     draft.add_argument("--mandatory", action="store_true")
     draft.add_argument("--revoke", action="append", default=[])
+    draft.add_argument("--bootstrap-manifest", type=Path)
+    draft.add_argument("--bootstrap-archive", type=Path)
+    draft.add_argument("--bootstrap-url")
     draft.add_argument("--artifact", action="append", required=True)
     draft.set_defaults(run=command_draft)
 

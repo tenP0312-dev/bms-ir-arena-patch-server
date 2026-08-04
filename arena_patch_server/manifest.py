@@ -4,11 +4,14 @@ import base64
 import hashlib
 import json
 import re
+import stat
 import urllib.error
 import urllib.request
+import zipfile
 from datetime import date as calendar_date
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
+from urllib.parse import urlparse
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -24,6 +27,7 @@ ANNOUNCEMENT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MAX_RELEASE_NOTES_BYTES = 64 * 1024
 MAX_ANNOUNCEMENTS = 20
 MAX_ANNOUNCEMENT_TITLE = 200
+MAX_BOOTSTRAP_BYTES = 2 * 1024 * 1024 * 1024
 
 
 class ManifestError(ValueError):
@@ -173,6 +177,7 @@ def build_manifest(
     mandatory: bool = False,
     minimum_launcher_version: str = "0.1.0",
     revoked_versions: Iterable[str] = (),
+    bootstrap: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -195,6 +200,7 @@ def build_manifest(
         "mandatory": bool(mandatory),
         "minimum_launcher_version": str(minimum_launcher_version).strip(),
         "revoked_versions": sorted({str(value).strip() for value in revoked_versions if str(value).strip()}),
+        "bootstrap": dict(bootstrap) if bootstrap is not None else None,
         "artifacts": [file_artifact(source_root, relative) for relative in artifacts],
     }
     validate_manifest(manifest, require_signature=False)
@@ -207,6 +213,116 @@ def sign_manifest(manifest: dict[str, Any], private_key: Ed25519PrivateKey) -> d
         private_key.sign(canonical_bytes(signed))
     ).decode("ascii")
     return signed
+
+
+def validate_artifact_list(value: object, *, label: str) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        raise ManifestError(f"{label} must be an array")
+    seen: set[str] = set()
+    for artifact in value:
+        if not isinstance(artifact, dict):
+            raise ManifestError(f"{label} entry must be an object")
+        relative = safe_artifact_path(artifact.get("path"))
+        folded = relative.casefold()
+        if folded in seen:
+            raise ManifestError(f"duplicate artifact path: {relative}")
+        seen.add(folded)
+        if not SHA256_RE.fullmatch(str(artifact.get("sha256") or "")):
+            raise ManifestError(f"invalid artifact SHA-256: {relative}")
+        if not isinstance(artifact.get("size"), int) or int(artifact["size"]) < 0:
+            raise ManifestError(f"invalid artifact size: {relative}")
+        if not isinstance(artifact.get("executable"), bool):
+            raise ManifestError(f"invalid executable flag: {relative}")
+    return value
+
+
+def validate_bootstrap(value: object) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict) or set(value) != {"url", "sha256", "size", "artifacts"}:
+        raise ManifestError("bootstrap fields are invalid")
+    parsed = urlparse(str(value.get("url") or ""))
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ManifestError("bootstrap URL must use HTTPS")
+    if not SHA256_RE.fullmatch(str(value.get("sha256") or "")):
+        raise ManifestError("invalid bootstrap SHA-256")
+    size = value.get("size")
+    if not isinstance(size, int) or size <= 0 or size > MAX_BOOTSTRAP_BYTES:
+        raise ManifestError("invalid bootstrap size")
+    artifacts = validate_artifact_list(value.get("artifacts"), label="bootstrap artifacts")
+    if not artifacts:
+        raise ManifestError("bootstrap artifacts cannot be empty")
+
+
+def bootstrap_metadata(
+    archive: Path,
+    url: str,
+    inventory_manifest: Mapping[str, object],
+) -> dict[str, object]:
+    validate_manifest(dict(inventory_manifest), require_signature=False)
+    artifacts = validate_artifact_list(
+        inventory_manifest.get("artifacts"),
+        label="bootstrap artifacts",
+    )
+    if not artifacts:
+        raise ManifestError("bootstrap artifacts cannot be empty")
+    expected = {str(item["path"]).casefold(): item for item in artifacts}
+    archive_artifact = file_artifact(archive.parent, archive.name)
+    if int(archive_artifact["size"]) <= 0 or int(archive_artifact["size"]) > MAX_BOOTSTRAP_BYTES:
+        raise ManifestError("invalid bootstrap size")
+    seen: set[str] = set()
+    try:
+        with zipfile.ZipFile(archive) as source:
+            for info in source.infolist():
+                name = info.filename
+                path = PurePosixPath(name)
+                mode = info.external_attr >> 16
+                if (
+                    "\\" in name
+                    or path.is_absolute()
+                    or any(part in {"", ".", ".."} for part in path.parts)
+                    or stat.S_IFMT(mode) == stat.S_IFLNK
+                ):
+                    raise ManifestError(f"unsafe bootstrap entry: {name}")
+                if info.is_dir():
+                    continue
+                if name.casefold() == "bmsir-arena-version.txt":
+                    continue
+                folded = name.casefold()
+                expected_artifact = expected.get(folded)
+                if expected_artifact is None or folded in seen:
+                    raise ManifestError(f"unexpected bootstrap entry: {name}")
+                if info.file_size != int(expected_artifact["size"]):
+                    raise ManifestError(f"bootstrap artifact mismatch: {name}")
+                digest = hashlib.sha256()
+                size = 0
+                with source.open(info) as payload:
+                    while chunk := payload.read(1024 * 1024):
+                        size += len(chunk)
+                        digest.update(chunk)
+                if (
+                    size != int(expected_artifact["size"])
+                    or digest.hexdigest() != expected_artifact["sha256"]
+                ):
+                    raise ManifestError(f"bootstrap artifact mismatch: {name}")
+                if expected_artifact["executable"] and not (
+                    name.lower().endswith((".exe", ".sh", ".command")) or mode & 0o111
+                ):
+                    raise ManifestError(f"bootstrap executable bit is missing: {name}")
+                seen.add(folded)
+    except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+        raise ManifestError("bootstrap archive is invalid") from exc
+    missing = sorted(expected.keys() - seen)
+    if missing:
+        raise ManifestError(f"bootstrap archive is incomplete: {missing[:3]}")
+    result = {
+        "url": str(url),
+        "sha256": archive_artifact["sha256"],
+        "size": archive_artifact["size"],
+        "artifacts": [dict(item) for item in artifacts],
+    }
+    validate_bootstrap(result)
+    return result
 
 
 def validate_manifest(manifest: dict[str, Any], *, require_signature: bool = True) -> None:
@@ -225,24 +341,8 @@ def validate_manifest(manifest: dict[str, Any], *, require_signature: bool = Tru
     if not isinstance(manifest.get("revoked_versions"), list):
         raise ManifestError("revoked_versions must be an array")
     validate_localized_content(manifest)
-    artifacts = manifest.get("artifacts")
-    if not isinstance(artifacts, list):
-        raise ManifestError("artifacts must be an array")
-    seen: set[str] = set()
-    for artifact in artifacts:
-        if not isinstance(artifact, dict):
-            raise ManifestError("artifact must be an object")
-        relative = safe_artifact_path(artifact.get("path"))
-        folded = relative.casefold()
-        if folded in seen:
-            raise ManifestError(f"duplicate artifact path: {relative}")
-        seen.add(folded)
-        if not SHA256_RE.fullmatch(str(artifact.get("sha256") or "")):
-            raise ManifestError(f"invalid artifact SHA-256: {relative}")
-        if not isinstance(artifact.get("size"), int) or int(artifact["size"]) < 0:
-            raise ManifestError(f"invalid artifact size: {relative}")
-        if not isinstance(artifact.get("executable"), bool):
-            raise ManifestError(f"invalid executable flag: {relative}")
+    validate_artifact_list(manifest.get("artifacts"), label="artifacts")
+    validate_bootstrap(manifest.get("bootstrap"))
     if require_signature and not str(manifest.get("signature") or ""):
         raise ManifestError("signature is required")
 

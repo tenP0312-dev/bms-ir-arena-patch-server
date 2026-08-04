@@ -6,6 +6,7 @@ import socketserver
 import threading
 import time
 import unittest
+import zipfile
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from arena_patch_server.manifest import (
     ManifestError,
+    bootstrap_metadata,
     build_manifest,
     check_update,
     fetch_manifest,
@@ -230,6 +232,80 @@ class PatchServerTest(unittest.TestCase):
             published_at="2026-08-03T00:00:00Z",
         )
         self.assertTrue(manifest["artifacts"][0]["executable"])
+
+    def test_bootstrap_archive_is_verified_and_signed(self) -> None:
+        source = self.root / "bootstrap-source"
+        (source / "runtime/bin").mkdir(parents=True)
+        (source / "ir").mkdir()
+        files = {
+            "Arena.jar": b"body",
+            "runtime/bin/java.exe": b"java",
+            "ir/bms_ir_arena.jar": b"plugin",
+        }
+        for relative, payload in files.items():
+            path = source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+        inventory = build_manifest(
+            source,
+            files,
+            channel="test",
+            platform="windows-x64",
+            version="0.4.14.8",
+            published_at="2026-08-04T00:00:00Z",
+        )
+        archive = self.root / "bootstrap.zip"
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as target:
+            for relative in files:
+                target.write(source / relative, relative)
+        bootstrap = bootstrap_metadata(
+            archive,
+            "https://example.test/releases/bootstrap.zip",
+            inventory,
+        )
+        delta = self.root / "delta"
+        delta.mkdir()
+        (delta / "BMS-IR Arena Test.exe").write_bytes(b"launcher")
+        manifest = sign_manifest(
+            build_manifest(
+                delta,
+                ["BMS-IR Arena Test.exe"],
+                channel="test",
+                platform="windows-x64",
+                version="0.4.14.9",
+                published_at="2026-08-04T01:00:00Z",
+                bootstrap=bootstrap,
+            ),
+            self.private,
+        )
+
+        verify_manifest(manifest, self.public)
+        self.assertEqual(3, len(manifest["bootstrap"]["artifacts"]))
+        self.assertEqual(archive.stat().st_size, manifest["bootstrap"]["size"])
+
+    def test_bootstrap_archive_rejects_unlisted_files(self) -> None:
+        source = self.root / "bootstrap-invalid-source"
+        source.mkdir()
+        (source / "Arena.jar").write_bytes(b"body")
+        inventory = build_manifest(
+            source,
+            ["Arena.jar"],
+            channel="test",
+            platform="windows-x64",
+            version="0.4.14.8",
+            published_at="2026-08-04T00:00:00Z",
+        )
+        archive = self.root / "bootstrap-invalid.zip"
+        with zipfile.ZipFile(archive, "w") as target:
+            target.write(source / "Arena.jar", "Arena.jar")
+            target.writestr("unexpected.dat", b"unexpected")
+
+        with self.assertRaisesRegex(ManifestError, "unexpected bootstrap entry"):
+            bootstrap_metadata(
+                archive,
+                "https://example.test/releases/bootstrap-invalid.zip",
+                inventory,
+            )
 
     def test_fetch_reports_available_and_stale(self) -> None:
         server, url = self.serve()
