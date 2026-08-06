@@ -16,13 +16,16 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from arena_patch_server.manifest import (
     ManifestError,
+    append_history_version,
     bootstrap_metadata,
     build_manifest,
     check_update,
     fetch_manifest,
+    sign_history,
     sign_manifest,
     safe_artifact_path,
     verify_artifacts,
+    verify_history,
     verify_manifest,
 )
 from arena_patch_server.cli import command_audit, command_draft, write_json_atomic
@@ -89,6 +92,16 @@ class PatchServerTest(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         return server, f"http://127.0.0.1:{server.server_address[1]}/manifest.json"
+
+    def _signed_history(self, *, channel: str, platform: str, version: str, published_at: str):
+        history = append_history_version(
+            [],
+            channel=channel,
+            platform=platform,
+            version=version,
+            published_at=published_at,
+        )
+        return sign_history(history, self.private)
 
     def test_signature_rejects_tampering(self) -> None:
         verify_manifest(self.signed, self.public)
@@ -188,6 +201,88 @@ class PatchServerTest(unittest.TestCase):
         self.assertEqual("## 更新\n- 日本語", manifest["release_notes_markdown_ja"])
         self.assertEqual("Update notice", manifest["announcements"][0]["title_en"])
         self.assertTrue(manifest["mandatory"])
+
+    def test_draft_cli_creates_and_appends_history(self) -> None:
+        source = self.root / "history-source"
+        source.mkdir()
+        (source / "Arena.jar").write_bytes(b"arena")
+        private_key = self.root / "history-test.key"
+        private_key.write_text(
+            base64.b64encode(
+                self.private.private_bytes(
+                    serialization.Encoding.Raw,
+                    serialization.PrivateFormat.Raw,
+                    serialization.NoEncryption(),
+                )
+            ).decode("ascii"),
+            encoding="ascii",
+        )
+
+        def draft_args(version: str):
+            return type("Args", (), {
+                "root": self.root / "history-publication",
+                "source": source,
+                "private_key": private_key,
+                "channel": "test",
+                "platform": "windows-x64",
+                "version": version,
+                "notes_file": None,
+                "notes_ja_file": None,
+                "notes_en_file": None,
+                "announcements_file": None,
+                "mandatory": False,
+                "minimum_launcher_version": "0.1.0",
+                "revoke": [],
+                "artifact": ["Arena.jar"],
+            })()
+
+        command_draft(draft_args("0.4.14"))
+        history_path = self.root / "history-publication/channels/test/windows-x64/history.json"
+        history = json.loads(history_path.read_text(encoding="utf-8"))
+        verify_history(history, self.public)
+        self.assertEqual(["0.4.14"], [entry["version"] for entry in history["versions"]])
+
+        command_draft(draft_args("0.4.15"))
+        history = json.loads(history_path.read_text(encoding="utf-8"))
+        verify_history(history, self.public)
+        self.assertEqual(
+            {"0.4.14", "0.4.15"},
+            {entry["version"] for entry in history["versions"]},
+        )
+        self.assertEqual(
+            1,
+            len([entry for entry in history["versions"] if entry["version"] == "0.4.14"]),
+        )
+
+    def test_history_entry_is_immutable(self) -> None:
+        history = append_history_version(
+            [],
+            channel="test",
+            platform="windows-x64",
+            version="0.4.14",
+            published_at="2026-08-03T00:00:00Z",
+        )
+        with self.assertRaisesRegex(ManifestError, "immutable"):
+            append_history_version(
+                history["versions"],
+                channel="test",
+                platform="windows-x64",
+                version="0.4.14",
+                published_at="2026-08-04T00:00:00Z",
+            )
+
+    def test_history_signature_rejects_tampering(self) -> None:
+        signed = self._signed_history(
+            channel="test",
+            platform="windows-x64",
+            version="0.4.14",
+            published_at="2026-08-03T00:00:00Z",
+        )
+        verify_history(signed, self.public)
+        tampered = json.loads(json.dumps(signed))
+        tampered["versions"][0]["version"] = "9.9.9"
+        with self.assertRaisesRegex(ManifestError, "signature"):
+            verify_history(tampered, self.public)
 
     def test_mutable_player_data_cannot_be_a_release_artifact(self) -> None:
         for value in (
@@ -408,6 +503,15 @@ class PatchServerTest(unittest.TestCase):
         versioned = publication / "channels/test/windows-x64/manifests/0.4.14.json"
         write_json_atomic(pointer, self.signed)
         write_json_atomic(versioned, self.signed)
+        write_json_atomic(
+            publication / "channels/test/windows-x64/history.json",
+            self._signed_history(
+                channel="test",
+                platform="windows-x64",
+                version="0.4.14",
+                published_at=self.signed["published_at"],
+            ),
+        )
         key_directory = TemporaryDirectory()
         self.addCleanup(key_directory.cleanup)
         public_key = Path(key_directory.name) / "test.pub"
@@ -439,6 +543,15 @@ class PatchServerTest(unittest.TestCase):
         windows_versioned = publication / "channels/test/windows-x64/manifests/0.4.14.json"
         write_json_atomic(windows_pointer, self.signed)
         write_json_atomic(windows_versioned, self.signed)
+        write_json_atomic(
+            publication / "channels/test/windows-x64/history.json",
+            self._signed_history(
+                channel="test",
+                platform="windows-x64",
+                version="0.4.14",
+                published_at=self.signed["published_at"],
+            ),
+        )
 
         mac_source = self.root / "mac-publication-source"
         mac_source.mkdir()
@@ -461,6 +574,15 @@ class PatchServerTest(unittest.TestCase):
         mac_versioned = publication / "channels/test/macos-arm64/manifests/0.4.14.json"
         write_json_atomic(mac_pointer, mac_manifest)
         write_json_atomic(mac_versioned, mac_manifest)
+        write_json_atomic(
+            publication / "channels/test/macos-arm64/history.json",
+            self._signed_history(
+                channel="test",
+                platform="macos-arm64",
+                version="0.4.14",
+                published_at="2026-08-03T00:00:00Z",
+            ),
+        )
 
         key_directory = TemporaryDirectory()
         self.addCleanup(key_directory.cleanup)
