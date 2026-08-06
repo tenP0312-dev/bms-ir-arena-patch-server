@@ -8,13 +8,23 @@ Each channel and platform has one mutable pointer and immutable release data:
 
 ```text
 channels/test/windows-x64/manifest.json
+channels/test/windows-x64/history.json
 channels/test/windows-x64/manifests/0.4.14.json
 channels/test/windows-x64/releases/0.4.14/BMS-IR Arena Test.exe
 channels/test/windows-x64/releases/0.4.14/Arena-oraja.jar
 channels/test/macos-arm64/manifest.json
+channels/test/macos-arm64/history.json
 channels/test/macos-arm64/manifests/0.4.14.json
 channels/test/macos-arm64/releases/0.4.14/BMS-IR Arena Test.app/Contents/MacOS/bmsir-arena-launcher
 ```
+
+`history.json` is a signed, append-only index of every version ever drafted
+for that channel/platform (`{version, published_at}` pairs, newest first).
+`draft` creates or updates it automatically; an existing entry's
+`published_at` can never change once recorded, so the index cannot silently
+rewrite when an older release actually shipped. Nothing is ever removed from
+it. `audit` requires it to exist and to already list the channel's current
+version.
 
 The manifest is canonical JSON signed with Ed25519. `artifacts` is the sparse
 delta for the current version. An optional `bootstrap` contains an HTTPS ZIP

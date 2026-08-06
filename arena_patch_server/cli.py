@@ -17,15 +17,18 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .manifest import (
     ManifestError,
+    append_history_version,
     bootstrap_metadata,
     build_manifest,
     fetch_manifest,
     load_private_key,
     load_public_key,
     safe_artifact_path,
+    sign_history,
     sign_manifest,
     validate_manifest,
     verify_artifacts,
+    verify_history,
     verify_manifest,
 )
 
@@ -131,11 +134,33 @@ def command_draft(args: argparse.Namespace) -> None:
         revoked_versions=args.revoke,
         bootstrap=bootstrap,
     )
-    signed = sign_manifest(manifest, load_private_key(args.private_key))
+    private_key = load_private_key(args.private_key)
+    signed = sign_manifest(manifest, private_key)
     target = args.root / "channels" / args.channel / args.platform / "manifests" / f"{args.version}.json"
     if target.exists() and read_manifest(target) != signed:
         raise ManifestError("versioned manifest is immutable")
     write_json_atomic(target, signed)
+
+    history_path = args.root / "channels" / args.channel / args.platform / "history.json"
+    existing_versions: list[dict[str, object]] = []
+    if history_path.exists():
+        existing_history = read_manifest(history_path)
+        verify_history(existing_history, private_key.public_key())
+        if (
+            existing_history.get("channel") != args.channel
+            or existing_history.get("platform") != args.platform
+        ):
+            raise ManifestError("history channel/platform mismatch")
+        existing_versions = existing_history.get("versions", [])
+    history = append_history_version(
+        existing_versions,
+        channel=args.channel,
+        platform=args.platform,
+        version=args.version,
+        published_at=signed["published_at"],
+    )
+    write_json_atomic(history_path, sign_history(history, private_key))
+
     print(target)
 
 
@@ -167,6 +192,20 @@ def command_audit(args: argparse.Namespace) -> None:
         if not versioned_path.is_file() or read_manifest(versioned_path) != manifest:
             raise ManifestError("versioned manifest does not match the channel pointer")
         expected.update({pointer_relative.as_posix(), versioned_relative.as_posix()})
+        history_relative = base / "history.json"
+        history_path = args.root.joinpath(*history_relative.parts)
+        if not history_path.is_file():
+            raise ManifestError("history index is missing for a published channel")
+        history = read_manifest(history_path)
+        verify_history(history, load_public_key(args.public_key))
+        if history.get("channel") != manifest["channel"] or history.get("platform") != manifest["platform"]:
+            raise ManifestError("history channel/platform mismatch")
+        if not any(
+            str(entry.get("version")) == str(manifest["version"])
+            for entry in history.get("versions", [])
+        ):
+            raise ManifestError("history index is missing the current channel version")
+        expected.add(history_relative.as_posix())
         release_base = base / "releases" / str(manifest["version"])
         for artifact in manifest["artifacts"]:
             expected.add(

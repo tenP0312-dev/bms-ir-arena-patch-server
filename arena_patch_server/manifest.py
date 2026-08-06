@@ -356,6 +356,86 @@ def verify_manifest(manifest: dict[str, Any], public_key: Ed25519PublicKey) -> N
         raise ManifestError("manifest signature verification failed") from exc
 
 
+def validate_history(history: dict[str, Any], *, require_signature: bool = True) -> None:
+    if int(history.get("schema_version") or 0) != SCHEMA_VERSION:
+        raise ManifestError("unsupported history schema")
+    if history.get("channel") not in VALID_CHANNELS:
+        raise ManifestError("invalid channel")
+    if history.get("platform") not in VALID_PLATFORMS:
+        raise ManifestError("invalid platform")
+    versions = history.get("versions")
+    if not isinstance(versions, list) or not versions:
+        raise ManifestError("versions must be a non-empty array")
+    seen: set[str] = set()
+    for entry in versions:
+        if not isinstance(entry, dict) or set(entry) != {"version", "published_at"}:
+            raise ManifestError("history entry fields are invalid")
+        version = str(entry.get("version") or "").strip()
+        published_at = str(entry.get("published_at") or "").strip()
+        if not version or not published_at:
+            raise ManifestError("history entry version/published_at is required")
+        folded = version.casefold()
+        if folded in seen:
+            raise ManifestError(f"duplicate history version: {version}")
+        seen.add(folded)
+    if require_signature and not str(history.get("signature") or ""):
+        raise ManifestError("signature is required")
+
+
+def sign_history(history: dict[str, Any], private_key: Ed25519PrivateKey) -> dict[str, Any]:
+    signed = dict(history)
+    signed["signature"] = base64.b64encode(
+        private_key.sign(canonical_bytes(signed))
+    ).decode("ascii")
+    return signed
+
+
+def verify_history(history: dict[str, Any], public_key: Ed25519PublicKey) -> None:
+    validate_history(history)
+    try:
+        signature = base64.b64decode(str(history["signature"]), validate=True)
+        public_key.verify(signature, canonical_bytes(history))
+    except Exception as exc:
+        raise ManifestError("history signature verification failed") from exc
+
+
+def append_history_version(
+    versions: Iterable[Mapping[str, object]],
+    *,
+    channel: str,
+    platform: str,
+    version: str,
+    published_at: str,
+) -> dict[str, Any]:
+    """Add one immutable (version, published_at) pair to a history index.
+
+    A version that is already present must keep its original published_at;
+    this mirrors the immutability of the per-version release manifest so a
+    history index can never silently rewrite when an older release actually
+    shipped.
+    """
+    version = str(version).strip()
+    published_at = str(published_at).strip()
+    result_versions = [dict(item) for item in versions]
+    folded = version.casefold()
+    for item in result_versions:
+        if str(item.get("version") or "").casefold() == folded:
+            if str(item.get("published_at") or "") != published_at:
+                raise ManifestError(f"history entry is immutable: {version}")
+            break
+    else:
+        result_versions.append({"version": version, "published_at": published_at})
+    result_versions.sort(key=lambda entry: entry["published_at"], reverse=True)
+    history = {
+        "schema_version": SCHEMA_VERSION,
+        "channel": str(channel),
+        "platform": str(platform),
+        "versions": result_versions,
+    }
+    validate_history(history, require_signature=False)
+    return history
+
+
 def verify_artifacts(root: Path, manifest: dict[str, Any]) -> None:
     release_root = root / "channels" / manifest["channel"] / manifest["platform"] / "releases" / manifest["version"]
     for expected in manifest["artifacts"]:
