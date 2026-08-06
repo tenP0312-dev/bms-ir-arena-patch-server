@@ -211,6 +211,32 @@ def command_audit(args: argparse.Namespace) -> None:
             expected.add(
                 (release_base / safe_artifact_path(str(artifact["path"]))).as_posix()
             )
+        # Every other version listed in the signed history is a legitimate
+        # downgrade target the launcher can fetch (see update.rs
+        # downgrade_to_version_from), so its own versioned manifest and
+        # release artifacts belong in the published tree too, not just the
+        # current channel pointer's.
+        for entry in history.get("versions", []):
+            entry_version = str(entry.get("version"))
+            if entry_version == str(manifest["version"]):
+                continue
+            entry_versioned_relative = base / "manifests" / f"{entry_version}.json"
+            entry_versioned_path = args.root.joinpath(*entry_versioned_relative.parts)
+            entry_manifest = verified_manifest(args.root, entry_versioned_path, args.public_key)
+            if (
+                entry_manifest["channel"] != manifest["channel"]
+                or entry_manifest["platform"] != manifest["platform"]
+                or str(entry_manifest["version"]) != entry_version
+            ):
+                raise ManifestError(
+                    f"history entry manifest does not match its own version: {entry_version}"
+                )
+            expected.add(entry_versioned_relative.as_posix())
+            entry_release_base = base / "releases" / entry_version
+            for artifact in entry_manifest["artifacts"]:
+                expected.add(
+                    (entry_release_base / safe_artifact_path(str(artifact["path"]))).as_posix()
+                )
         audited.append(f"{manifest['channel']} {manifest['platform']} {manifest['version']}")
     paths = list(args.root.rglob("*"))
     if any(path.is_symlink() for path in paths):
