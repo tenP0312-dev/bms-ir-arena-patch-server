@@ -534,6 +534,94 @@ class PatchServerTest(unittest.TestCase):
         with self.assertRaisesRegex(ManifestError, "publication tree mismatch"):
             command_audit(args)
 
+    def test_publication_audit_requires_every_history_entrys_files(self) -> None:
+        # Every version listed in the signed history is a legitimate
+        # downgrade target (see downgrade_to_version_from in the launcher),
+        # so the published tree must contain that version's own manifest
+        # and release artifacts too -- not just the current channel
+        # pointer's -- or a real launcher downgrade would 404 against a
+        # tree that passed audit.
+        publication = self.root / "history-audit-publication"
+        old_source = self.root / "history-audit-old-source"
+        old_source.mkdir()
+        (old_source / "Arena.jar").write_bytes(b"old-arena")
+        old_manifest = sign_manifest(
+            build_manifest(
+                old_source,
+                ["Arena.jar"],
+                channel="test",
+                platform="windows-x64",
+                version="0.4.13",
+                published_at="2026-08-02T00:00:00Z",
+            ),
+            self.private,
+        )
+        old_release = publication / "channels/test/windows-x64/releases/0.4.13"
+        old_release.mkdir(parents=True)
+        (old_release / "Arena.jar").write_bytes(b"old-arena")
+        write_json_atomic(
+            publication / "channels/test/windows-x64/manifests/0.4.13.json", old_manifest
+        )
+
+        current_release = publication / "channels/test/windows-x64/releases/0.4.14"
+        current_release.mkdir(parents=True)
+        (current_release / "Arena.jar").write_bytes(b"arena")
+        pointer = publication / "channels/test/windows-x64/manifest.json"
+        versioned = publication / "channels/test/windows-x64/manifests/0.4.14.json"
+        write_json_atomic(pointer, self.signed)
+        write_json_atomic(versioned, self.signed)
+
+        history = append_history_version(
+            [],
+            channel="test",
+            platform="windows-x64",
+            version="0.4.13",
+            published_at="2026-08-02T00:00:00Z",
+        )
+        history = append_history_version(
+            history["versions"],
+            channel="test",
+            platform="windows-x64",
+            version="0.4.14",
+            published_at=self.signed["published_at"],
+        )
+        write_json_atomic(
+            publication / "channels/test/windows-x64/history.json",
+            sign_history(history, self.private),
+        )
+
+        key_directory = TemporaryDirectory()
+        self.addCleanup(key_directory.cleanup)
+        public_key = Path(key_directory.name) / "test.pub"
+        public_key.write_text(
+            base64.b64encode(
+                self.public.public_bytes(
+                    serialization.Encoding.Raw,
+                    serialization.PublicFormat.Raw,
+                )
+            ).decode("ascii"),
+            encoding="ascii",
+        )
+        args = type("Args", (), {
+            "root": publication,
+            "manifest": pointer,
+            "public_key": public_key,
+        })()
+        command_audit(args)
+
+        # A historical entry whose own manifest fails verification (here,
+        # tampered after signing) must still fail audit, not be silently
+        # skipped.
+        tampered_old_manifest = dict(old_manifest)
+        tampered_old_manifest["version"] = "0.4.13"
+        tampered_old_manifest["minimum_launcher_version"] = "9.9.9"
+        write_json_atomic(
+            publication / "channels/test/windows-x64/manifests/0.4.13.json",
+            tampered_old_manifest,
+        )
+        with self.assertRaisesRegex(ManifestError, "signature"):
+            command_audit(args)
+
     def test_publication_audit_accepts_exact_multi_platform_tree(self) -> None:
         publication = self.root / "multi-publication"
         windows_release = publication / "channels/test/windows-x64/releases/0.4.14"
