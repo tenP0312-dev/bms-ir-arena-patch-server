@@ -58,6 +58,14 @@ jobs:
           with tarfile.open(archive, "r:gz") as source:
               source.extractall(site, filter="data")
 
+          # BSD tar may add unsigned AppleDouble metadata even when the source
+          # tree itself is exact. Remove only those regular sidecar files;
+          # the audit below still rejects every other extra or missing path.
+          for metadata in site.rglob("._*"):
+              if metadata.is_symlink() or not metadata.is_file():
+                  raise SystemExit(f"invalid AppleDouble metadata path: {metadata}")
+              metadata.unlink()
+
           Path("test-public-key.txt").write_text(
               os.environ["TEST_PUBLIC_KEY"].strip() + "\n",
               encoding="ascii",
