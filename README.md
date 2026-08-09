@@ -148,6 +148,10 @@ manually dispatch `Deploy signed test channel` with that tag and asset name.
 The workflow extracts the archive safely, rejects unlisted files and symlinks,
 verifies both Windows and macOS manifest signatures and every artifact, and
 only then deploys it.
+When packaging on macOS, set `COPYFILE_DISABLE=1` so BSD tar does not add
+AppleDouble `._*` metadata. The deploy workflow also removes only regular
+AppleDouble sidecars before the exact-tree audit, while every other unsigned
+path remains a hard failure.
 Release binaries remain outside Git history, and the normal public download
 page and changelog do not link the internal test channel.
 
