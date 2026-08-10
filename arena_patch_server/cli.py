@@ -131,6 +131,7 @@ def command_draft(args: argparse.Namespace) -> None:
         announcements=announcements,
         mandatory=args.mandatory,
         minimum_launcher_version=args.minimum_launcher_version,
+        launcher_version=getattr(args, "launcher_version", None),
         revoked_versions=args.revoke,
         bootstrap=bootstrap,
     )
@@ -323,6 +324,10 @@ def parser() -> argparse.ArgumentParser:
     draft.add_argument("--notes-en-file", type=Path)
     draft.add_argument("--announcements-file", type=Path)
     draft.add_argument("--minimum-launcher-version", default="0.1.0")
+    draft.add_argument(
+        "--launcher-version",
+        help="latest launcher version carried by the signed platform artifacts",
+    )
     draft.add_argument("--mandatory", action="store_true")
     draft.add_argument("--revoke", action="append", default=[])
     draft.add_argument("--bootstrap-manifest", type=Path)

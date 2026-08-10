@@ -129,6 +129,87 @@ class PatchServerTest(unittest.TestCase):
         legacy = sign_manifest(legacy, self.private)
         verify_manifest(legacy, self.public)
 
+    def test_signed_launcher_version_requires_platform_artifact(self) -> None:
+        source = self.root / "launcher-version-source"
+        source.mkdir()
+        (source / "Arena.jar").write_bytes(b"arena")
+        with self.assertRaisesRegex(ManifestError, "platform launcher artifact"):
+            build_manifest(
+                source,
+                ["Arena.jar"],
+                channel="test",
+                platform="windows-x64",
+                version="0.4.14.25",
+                published_at="2026-08-09T00:00:00Z",
+                launcher_version="0.2.20",
+            )
+
+        (source / "BMS-IR Arena.exe").write_bytes(b"stable-launcher")
+        with self.assertRaisesRegex(ManifestError, "platform launcher artifact"):
+            build_manifest(
+                source,
+                ["Arena.jar", "BMS-IR Arena.exe"],
+                channel="test",
+                platform="windows-x64",
+                version="0.4.14.25",
+                published_at="2026-08-09T00:00:00Z",
+                launcher_version="0.2.20",
+            )
+
+        launcher = source / "BMS-IR Arena Test.exe"
+        launcher.write_bytes(b"launcher")
+        manifest = sign_manifest(
+            build_manifest(
+                source,
+                ["Arena.jar", "BMS-IR Arena Test.exe"],
+                channel="test",
+                platform="windows-x64",
+                version="0.4.14.25",
+                published_at="2026-08-09T00:00:00Z",
+                launcher_version="0.2.20",
+            ),
+            self.private,
+        )
+        verify_manifest(manifest, self.public)
+        self.assertEqual("0.2.20", manifest["launcher_version"])
+        tampered = dict(manifest)
+        tampered["launcher_version"] = "0.2.21"
+        with self.assertRaisesRegex(ManifestError, "signature"):
+            verify_manifest(tampered, self.public)
+
+        with self.assertRaisesRegex(ManifestError, "unsafe artifact path"):
+            build_manifest(
+                source,
+                [".bmsir-launcher-settings.json"],
+                channel="test",
+                platform="windows-x64",
+                version="0.4.14.25",
+                published_at="2026-08-09T00:00:00Z",
+            )
+
+    def test_macos_launcher_version_requires_bundle_executable(self) -> None:
+        source = self.root / "mac-launcher-version-source"
+        executable = (
+            source
+            / "BMS-IR Arena Test.app"
+            / "Contents"
+            / "MacOS"
+            / "bmsir-arena-launcher"
+        )
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"launcher")
+        executable.chmod(0o755)
+        manifest = build_manifest(
+            source,
+            ["BMS-IR Arena Test.app/Contents/MacOS/bmsir-arena-launcher"],
+            channel="test",
+            platform="macos-arm64",
+            version="0.4.14.25",
+            published_at="2026-08-09T00:00:00Z",
+            launcher_version="0.2.20",
+        )
+        self.assertEqual("0.2.20", manifest["launcher_version"])
+
     def test_invalid_announcements_are_rejected(self) -> None:
         source = self.root / "source"
         cases = (
@@ -153,6 +234,7 @@ class PatchServerTest(unittest.TestCase):
         source = self.root / "cli-source"
         source.mkdir()
         (source / "Arena.jar").write_bytes(b"arena")
+        (source / "BMS-IR Arena Test.exe").write_bytes(b"launcher")
         private_key = self.root / "test.key"
         private_key.write_text(
             base64.b64encode(
@@ -187,8 +269,9 @@ class PatchServerTest(unittest.TestCase):
             "announcements_file": announcements,
             "mandatory": True,
             "minimum_launcher_version": "0.2.4",
+            "launcher_version": "0.2.20",
             "revoke": [],
-            "artifact": ["Arena.jar"],
+            "artifact": ["Arena.jar", "BMS-IR Arena Test.exe"],
         })()
         command_draft(args)
         manifest_path = (
@@ -201,6 +284,7 @@ class PatchServerTest(unittest.TestCase):
         self.assertEqual("## 更新\n- 日本語", manifest["release_notes_markdown_ja"])
         self.assertEqual("Update notice", manifest["announcements"][0]["title_en"])
         self.assertTrue(manifest["mandatory"])
+        self.assertEqual("0.2.20", manifest["launcher_version"])
 
     def test_draft_cli_creates_and_appends_history(self) -> None:
         source = self.root / "history-source"
@@ -424,6 +508,29 @@ class PatchServerTest(unittest.TestCase):
                     platform="windows-x64",
                     current_version="0.4.14",
                     launcher_version="0.1.0",
+                ),
+            )
+
+            launcher_source = self.root / "launcher-update-source"
+            launcher_source.mkdir()
+            (launcher_source / "BMS-IR Arena Test.exe").write_bytes(b"launcher")
+            launcher_manifest = build_manifest(
+                launcher_source,
+                ["BMS-IR Arena Test.exe"],
+                channel="test",
+                platform="windows-x64",
+                version="0.4.14",
+                published_at="2026-08-09T00:00:00Z",
+                launcher_version="0.2.20",
+            )
+            self.assertEqual(
+                "launcher_available",
+                check_update(
+                    launcher_manifest,
+                    channel="test",
+                    platform="windows-x64",
+                    current_version="0.4.14",
+                    launcher_version="0.2.17",
                 ),
             )
         finally:

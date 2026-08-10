@@ -29,12 +29,15 @@ version.
 The manifest is canonical JSON signed with Ed25519. `artifacts` is the sparse
 delta for the current version. An optional `bootstrap` contains an HTTPS ZIP
 URL, ZIP size and SHA-256, and the full installation inventory used only when
-the launcher is in an empty directory. Every artifact path,
-SHA-256, size, channel, platform, mandatory flag, minimum launcher version,
-revocation list, Japanese/English release notes, and announcement list is
-covered by the signature. Artifact paths are relative and release directories
-are immutable. Older manifests that only contain `release_notes_markdown`
-remain valid; current launchers use it as the fallback for both languages.
+the launcher is in an empty directory. Every artifact path, SHA-256, size,
+channel, platform, mandatory flag, minimum launcher version, optional latest
+`launcher_version`, revocation list, Japanese/English release notes, and
+announcement list is covered by the signature. When `launcher_version` is
+present, the same sparse release must carry the matching Windows launcher EXE
+or macOS launcher executable so a body-current installation can still receive
+the launcher independently. Artifact paths are relative and release
+directories are immutable. Older manifests without `launcher_version`, or
+with only `release_notes_markdown`, remain valid.
 
 Player profiles, BMS data, replays, score databases, configuration files, the
 local version marker, staging data, and launcher backups are rejected as patch
@@ -62,6 +65,7 @@ bmsir-arena-patch draft \
   --notes-ja-file release-notes-ja.md \
   --notes-en-file release-notes-en.md \
   --announcements-file announcements.json \
+  --launcher-version 0.2.20 \
   --bootstrap-manifest previous-windows-manifest.json \
   --bootstrap-archive BMS-IR-Arena-oraja-0.4.14.8-windows-test-java21.zip \
   --bootstrap-url https://github.com/example/releases/download/test-0.4.14.8/BMS-IR-Arena-oraja-0.4.14.8-windows-test-java21.zip \
@@ -82,6 +86,7 @@ bmsir-arena-patch draft \
   --notes-ja-file release-notes-ja.md \
   --notes-en-file release-notes-en.md \
   --announcements-file announcements.json \
+  --launcher-version 0.2.20 \
   --bootstrap-manifest previous-macos-manifest.json \
   --bootstrap-archive BMS-IR-Arena-oraja-0.4.14.8-macos-test-java21.zip \
   --bootstrap-url https://github.com/example/releases/download/test-0.4.14.8/BMS-IR-Arena-oraja-0.4.14.8-macos-test-java21.zip \

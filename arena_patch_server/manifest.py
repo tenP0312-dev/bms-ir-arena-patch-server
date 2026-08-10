@@ -24,6 +24,7 @@ VALID_PLATFORMS = {"windows-x64", "macos-arm64"}
 MAX_MANIFEST_BYTES = 1024 * 1024
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 ANNOUNCEMENT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$")
 MAX_RELEASE_NOTES_BYTES = 64 * 1024
 MAX_ANNOUNCEMENTS = 20
 MAX_ANNOUNCEMENT_TITLE = 200
@@ -78,7 +79,7 @@ def safe_artifact_path(value: object) -> str:
             "config_sys.json", "config_player.json", "score.db",
             "songdata.db", "bmsir_maniac.db", "bmsir_arena.json",
             "bmsir-arena-version.txt", ".bmsir-launcher-policy.json",
-            ".bmsir-launcher-policy.tmp",
+            ".bmsir-launcher-policy.tmp", ".bmsir-launcher-settings.json",
         }
     ):
         raise ManifestError(f"unsafe artifact path: {text}")
@@ -176,6 +177,7 @@ def build_manifest(
     announcements: Iterable[Mapping[str, object]] = (),
     mandatory: bool = False,
     minimum_launcher_version: str = "0.1.0",
+    launcher_version: str | None = None,
     revoked_versions: Iterable[str] = (),
     bootstrap: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
@@ -203,6 +205,8 @@ def build_manifest(
         "bootstrap": dict(bootstrap) if bootstrap is not None else None,
         "artifacts": [file_artifact(source_root, relative) for relative in artifacts],
     }
+    if launcher_version is not None:
+        manifest["launcher_version"] = str(launcher_version).strip()
     validate_manifest(manifest, require_signature=False)
     return manifest
 
@@ -341,7 +345,38 @@ def validate_manifest(manifest: dict[str, Any], *, require_signature: bool = Tru
     if not isinstance(manifest.get("revoked_versions"), list):
         raise ManifestError("revoked_versions must be an array")
     validate_localized_content(manifest)
-    validate_artifact_list(manifest.get("artifacts"), label="artifacts")
+    artifacts = validate_artifact_list(manifest.get("artifacts"), label="artifacts")
+    if "launcher_version" in manifest:
+        launcher_version = manifest.get("launcher_version")
+        if not isinstance(launcher_version, str) or not VERSION_RE.fullmatch(launcher_version):
+            raise ManifestError("launcher_version is invalid")
+        artifact_paths = [str(item["path"]).casefold() for item in artifacts]
+        if manifest["platform"] == "windows-x64":
+            expected_launcher = (
+                "bms-ir arena test.exe"
+                if manifest["channel"] == "test"
+                else "bms-ir arena.exe"
+            )
+            launcher_present = any(
+                PurePosixPath(path).parent == PurePosixPath(".")
+                and PurePosixPath(path).name == expected_launcher
+                for path in artifact_paths
+            )
+        else:
+            expected_app = (
+                "bms-ir arena test.app"
+                if manifest["channel"] == "test"
+                else "bms-ir arena.app"
+            )
+            launcher_present = any(
+                path.endswith(".app/contents/macos/bmsir-arena-launcher")
+                and PurePosixPath(path).parts[0] == expected_app
+                for path in artifact_paths
+            )
+        if not launcher_present:
+            raise ManifestError(
+                "launcher_version requires the platform launcher artifact"
+            )
     validate_bootstrap(manifest.get("bootstrap"))
     if require_signature and not str(manifest.get("signature") or ""):
         raise ManifestError("signature is required")
@@ -470,9 +505,15 @@ def check_update(
         return "launcher_too_old"
     if current_version in manifest.get("revoked_versions", []):
         return "revoked"
-    if version_key(str(manifest["version"])) <= version_key(current_version):
-        return "current"
-    return "available"
+    if version_key(str(manifest["version"])) > version_key(current_version):
+        return "available"
+    available_launcher = str(manifest.get("launcher_version") or "").strip()
+    if (
+        available_launcher
+        and version_key(available_launcher) > version_key(launcher_version)
+    ):
+        return "launcher_available"
+    return "current"
 
 
 def fetch_manifest(
