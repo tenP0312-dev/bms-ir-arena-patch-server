@@ -160,6 +160,20 @@ path remains a hard failure.
 Release binaries remain outside Git history, and the normal public download
 page and changelog do not link the internal test channel.
 
+When the complete append-only archive exceeds GitHub Releases' per-asset size
+limit, split it without changing its bytes and upload every numbered part:
+
+```sh
+split -b 1900m -d -a 3 \
+  bmsir-arena-test-channel-0.4.14.33.tar.gz \
+  bmsir-arena-test-channel-0.4.14.33.tar.gz.part
+```
+
+Dispatch the workflow with the unsuffixed archive name. It accepts either the
+single asset or contiguous `.part000`, `.part001`, ... assets, reconstructs the
+original archive, and then performs the same signature and exact-tree audit.
+Mixed, missing, malformed, empty, or inconsistently sized parts fail closed.
+
 The same exact-tree check is available locally by passing every channel pointer
 to one `bmsir-arena-patch audit` invocation:
 

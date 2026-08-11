@@ -34,16 +34,25 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install -e .
 
-      - name: Download signed channel archive
+      - name: Download signed channel archive assets
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           ASSET_NAME: ${{ inputs.asset_name }}
-        run: gh release download "$RELEASE_TAG" --pattern "$ASSET_NAME" --dir download
+        run: gh release download "$RELEASE_TAG" --pattern "$ASSET_NAME*" --dir download
+
+      - name: Assemble signed channel archive
+        env:
+          ASSET_NAME: ${{ inputs.asset_name }}
+        run: |
+          bmsir-arena-patch assemble-archive \
+            --parts-directory download \
+            --asset-name "$ASSET_NAME" \
+            --output assembled/channel.tar.gz
 
       - name: Extract and verify exact signed tree
         env:
-          ARCHIVE: download/${{ inputs.asset_name }}
+          ARCHIVE: assembled/channel.tar.gz
           TEST_PUBLIC_KEY: ${{ vars.ARENA_TEST_RELEASE_PUBLIC_KEY }}
         run: |
           test -n "$TEST_PUBLIC_KEY"

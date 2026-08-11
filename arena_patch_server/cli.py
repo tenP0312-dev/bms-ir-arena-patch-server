@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from .archive import ArchivePartsError, assemble_release_archive
 from .manifest import (
     ManifestError,
     append_history_version,
@@ -304,6 +305,10 @@ def command_probe(args: argparse.Namespace) -> None:
     print(f"{state} {manifest['version']}")
 
 
+def command_assemble_archive(args: argparse.Namespace) -> None:
+    print(assemble_release_archive(args.parts_directory, args.asset_name, args.output))
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="bmsir-arena-patch")
     commands = result.add_subparsers(dest="command", required=True)
@@ -385,6 +390,12 @@ def parser() -> argparse.ArgumentParser:
     probe.add_argument("--launcher-version", default="0.1.0")
     probe.add_argument("--timeout", type=float, default=10.0)
     probe.set_defaults(run=command_probe)
+
+    assemble_archive = commands.add_parser("assemble-archive")
+    assemble_archive.add_argument("--parts-directory", type=Path, required=True)
+    assemble_archive.add_argument("--asset-name", required=True)
+    assemble_archive.add_argument("--output", type=Path, required=True)
+    assemble_archive.set_defaults(run=command_assemble_archive)
     return result
 
 
@@ -393,7 +404,7 @@ def main(argv: list[str] | None = None) -> int:
         args = parser().parse_args(argv)
         args.run(args)
         return 0
-    except (ManifestError, OSError, json.JSONDecodeError) as exc:
+    except (ArchivePartsError, ManifestError, OSError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
