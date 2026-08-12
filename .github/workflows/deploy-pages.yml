@@ -1,14 +1,14 @@
-name: Deploy signed test channel
+name: Deploy complete signed test-channel snapshot (seed or rollback)
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: GitHub Release tag containing the signed Pages archive
+        description: GitHub Release tag containing the complete signed Pages snapshot
         required: true
         type: string
       asset_name:
-        description: Release asset name
+        description: Complete snapshot asset name (without .partNNN)
         required: true
         type: string
 

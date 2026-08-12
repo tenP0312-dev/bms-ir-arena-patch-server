@@ -107,10 +107,11 @@ copied into the Pages tree. Its signed HTTPS URL normally points to an
 immutable GitHub Release asset.
 
 `rollback` repoints the channel to a verified older versioned manifest only
-when that release's immutable files are still in the deployed tree. Sparse
-Pages releases deliberately contain only their current delta, so operational
-rollback is performed by redeploying the complete previously archived Pages
-asset rather than repointing inside the current sparse tree.
+when that release's immutable files are still in the deployed tree. The Pages
+tree keeps every version in signed history for launcher downgrade support, but
+operational rollback still redeploys a complete previously archived Pages
+snapshot. That restores both mutable pointers and the exact signed history as
+one verified unit.
 `revoke` adds a version to the signed revocation list and makes the channel
 mandatory. Both operations still require an explicit operator command.
 
@@ -147,35 +148,11 @@ bmsir-arena-patch probe \
 ## GitHub Pages test-channel hosting
 
 The repository's GitHub Pages site serves the generated tree at
-`https://tenp0312-dev.github.io/bms-ir-arena-patch-server/`. Package the exact
-generated sparse `dist/` tree as a `.tar.gz` GitHub pre-release asset, then
-manually dispatch `Deploy signed test channel` with that tag and asset name.
-The workflow extracts the archive safely, rejects unlisted files and symlinks,
-verifies both Windows and macOS manifest signatures and every artifact, and
-only then deploys it.
-When packaging on macOS, set `COPYFILE_DISABLE=1` so BSD tar does not add
-AppleDouble `._*` metadata. The deploy workflow also removes only regular
-AppleDouble sidecars before the exact-tree audit, while every other unsigned
-path remains a hard failure.
-Release binaries remain outside Git history, and the normal public download
-page and changelog do not link the internal test channel.
+`https://tenp0312-dev.github.io/bms-ir-arena-patch-server/`.
 
-When the complete append-only archive exceeds GitHub Releases' per-asset size
-limit, split it without changing its bytes and upload every numbered part:
-
-```sh
-split -b 1900m -d -a 3 \
-  bmsir-arena-test-channel-0.4.14.33.tar.gz \
-  bmsir-arena-test-channel-0.4.14.33.tar.gz.part
-```
-
-Dispatch the workflow with the unsuffixed archive name. It accepts either the
-single asset or contiguous `.part000`, `.part001`, ... assets, reconstructs the
-original archive, and then performs the same signature and exact-tree audit.
-Mixed, missing, malformed, empty, or inconsistently sized parts fail closed.
-
-The same exact-tree check is available locally by passing every channel pointer
-to one `bmsir-arena-patch audit` invocation:
+Normal releases use a delta upload. Keep the locally generated `dist/` tree
+complete and append-only, run the exact audit, then package only the platform
+pointers that changed:
 
 ```sh
 bmsir-arena-patch audit \
@@ -183,7 +160,80 @@ bmsir-arena-patch audit \
   --manifest dist/channels/test/windows-x64/manifest.json \
   --manifest dist/channels/test/macos-arm64/manifest.json \
   --public-key public/test.pub
+
+bmsir-arena-patch create-delta \
+  --root dist \
+  --manifest dist/channels/test/windows-x64/manifest.json \
+  --manifest dist/channels/test/macos-arm64/manifest.json \
+  --public-key public/test.pub \
+  --output ../bmsir-arena-test-channel-0.4.14.36-delta.tar.gz
 ```
+
+Pass only the changed platform pointer to `create-delta` when a release changes
+one platform. The command verifies signatures, history, the matching immutable
+versioned manifest, and artifact hashes. It writes an archive containing only
+that version's pointer, signed history, versioned manifest, and artifacts. The
+output must be outside `dist/` so it cannot contaminate the exact publication
+tree.
+
+Create the checked pre-release and upload the small delta, then manually
+dispatch `Deploy signed test-channel delta`:
+
+```sh
+gh release create test-0.4.14.36 \
+  --repo tenP0312-dev/bms-ir-arena-patch-server \
+  --prerelease \
+  --title "Arena internal test 0.4.14.36"
+gh release upload test-0.4.14.36 \
+  ../bmsir-arena-test-channel-0.4.14.36-delta.tar.gz \
+  --repo tenP0312-dev/bms-ir-arena-patch-server
+```
+
+Use these workflow inputs:
+
+- `base_release_tag`: the previous successfully deployed release tag
+- `base_asset_name`: its complete snapshot name, without `.partNNN`
+- `release_tag`: the new release tag containing the delta
+- `delta_asset_name`: the uploaded delta name, without `.partNNN`
+- `snapshot_asset_name`: the complete snapshot name to create for this release
+
+The workflow downloads the previous complete snapshot inside GitHub, audits it,
+and accepts the delta only when each changed platform strictly prepends exactly
+one signed history entry. It rejects history rewrites, immutable path
+overwrites, missing files, symlinks, special files, and every extra path. It
+then audits the reconstructed complete tree, creates deterministic 1,900 MiB
+snapshot parts on the runner, and stores those parts on the new Release. The
+verified Pages tree is deployed before that recurring multi-gigabyte archive
+upload, so snapshot retention does not delay the client update. A retry accepts
+an existing snapshot part only when its bytes are identical. The new release and its unsuffixed
+`snapshot_asset_name` become the base inputs for the next delta.
+
+The delta can also be split if it exceptionally exceeds GitHub Releases'
+per-asset limit:
+
+```sh
+split -b 1900m -d -a 3 \
+  bmsir-arena-test-channel-0.4.14.36-delta.tar.gz \
+  bmsir-arena-test-channel-0.4.14.36-delta.tar.gz.part
+```
+
+Both workflows accept either one archive asset or contiguous `.part000`,
+`.part001`, ... assets when given the unsuffixed archive name. Mixed, missing,
+malformed, empty, or inconsistently sized parts fail closed.
+
+`Deploy complete signed test-channel snapshot (seed or rollback)` is not the
+normal release path. Use it only to install the first trusted base snapshot or
+to redeploy a complete archived snapshot during rollback. Do not rebuild and
+upload the multi-gigabyte complete snapshot from an operator machine for each
+release; the delta workflow owns that recurring work. The existing
+`test-launcher-0.2.21` complete snapshot can seed the first delta deployment.
+
+When a complete snapshot really must be packaged on macOS, set
+`COPYFILE_DISABLE=1` so BSD tar does not add AppleDouble `._*` metadata. The
+workflows remove only regular AppleDouble sidecars before audit; every other
+unsigned path remains a hard failure. Release binaries remain outside Git
+history, and the normal public download page and changelog do not link the
+internal test channel.
 
 The configured internal launcher is compiled with that HTTPS base URL and the
 matching disposable test public key. Keep the private key outside every Git

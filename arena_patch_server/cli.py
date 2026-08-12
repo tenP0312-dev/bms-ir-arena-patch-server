@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .archive import ArchivePartsError, assemble_release_archive
+from .delta import apply_publication_delta, create_publication_delta
 from .manifest import (
     ManifestError,
     append_history_version,
@@ -178,28 +179,27 @@ def command_verify(args: argparse.Namespace) -> None:
     print(f"OK {manifest['channel']} {manifest['platform']} {manifest['version']}")
 
 
-def command_audit(args: argparse.Namespace) -> None:
-    manifest_paths = args.manifest if isinstance(args.manifest, list) else [args.manifest]
+def audit_publication(root: Path, manifest_paths: list[Path], public_key: Path) -> list[str]:
     expected: set[str] = set()
     audited: list[str] = []
     for manifest_path in manifest_paths:
-        manifest = verified_manifest(args.root, manifest_path, args.public_key)
+        manifest = verified_manifest(root, manifest_path, public_key)
         base = PurePosixPath("channels") / str(manifest["channel"]) / str(manifest["platform"])
         pointer_relative = base / "manifest.json"
         versioned_relative = base / "manifests" / f"{manifest['version']}.json"
-        pointer_path = args.root.joinpath(*pointer_relative.parts)
-        versioned_path = args.root.joinpath(*versioned_relative.parts)
+        pointer_path = root.joinpath(*pointer_relative.parts)
+        versioned_path = root.joinpath(*versioned_relative.parts)
         if pointer_path.resolve() != manifest_path.resolve():
             raise ManifestError("audit manifest must be the channel pointer")
         if not versioned_path.is_file() or read_manifest(versioned_path) != manifest:
             raise ManifestError("versioned manifest does not match the channel pointer")
         expected.update({pointer_relative.as_posix(), versioned_relative.as_posix()})
         history_relative = base / "history.json"
-        history_path = args.root.joinpath(*history_relative.parts)
+        history_path = root.joinpath(*history_relative.parts)
         if not history_path.is_file():
             raise ManifestError("history index is missing for a published channel")
         history = read_manifest(history_path)
-        verify_history(history, load_public_key(args.public_key))
+        verify_history(history, load_public_key(public_key))
         if history.get("channel") != manifest["channel"] or history.get("platform") != manifest["platform"]:
             raise ManifestError("history channel/platform mismatch")
         if not any(
@@ -223,8 +223,8 @@ def command_audit(args: argparse.Namespace) -> None:
             if entry_version == str(manifest["version"]):
                 continue
             entry_versioned_relative = base / "manifests" / f"{entry_version}.json"
-            entry_versioned_path = args.root.joinpath(*entry_versioned_relative.parts)
-            entry_manifest = verified_manifest(args.root, entry_versioned_path, args.public_key)
+            entry_versioned_path = root.joinpath(*entry_versioned_relative.parts)
+            entry_manifest = verified_manifest(root, entry_versioned_path, public_key)
             if (
                 entry_manifest["channel"] != manifest["channel"]
                 or entry_manifest["platform"] != manifest["platform"]
@@ -240,14 +240,20 @@ def command_audit(args: argparse.Namespace) -> None:
                     (entry_release_base / safe_artifact_path(str(artifact["path"]))).as_posix()
                 )
         audited.append(f"{manifest['channel']} {manifest['platform']} {manifest['version']}")
-    paths = list(args.root.rglob("*"))
+    paths = list(root.rglob("*"))
     if any(path.is_symlink() for path in paths):
         raise ManifestError("publication tree contains a symlink")
-    actual = {path.relative_to(args.root).as_posix() for path in paths if path.is_file()}
+    actual = {path.relative_to(root).as_posix() for path in paths if path.is_file()}
     if actual != expected:
         missing = sorted(expected - actual)
         extra = sorted(actual - expected)
         raise ManifestError(f"publication tree mismatch: missing={missing} extra={extra}")
+    return audited
+
+
+def command_audit(args: argparse.Namespace) -> None:
+    manifest_paths = args.manifest if isinstance(args.manifest, list) else [args.manifest]
+    audited = audit_publication(args.root, manifest_paths, args.public_key)
     print("AUDIT OK " + "; ".join(audited))
 
 
@@ -307,6 +313,15 @@ def command_probe(args: argparse.Namespace) -> None:
 
 def command_assemble_archive(args: argparse.Namespace) -> None:
     print(assemble_release_archive(args.parts_directory, args.asset_name, args.output))
+
+
+def command_create_delta(args: argparse.Namespace) -> None:
+    print(create_publication_delta(args.root, args.manifest, args.public_key, args.output))
+
+
+def command_apply_delta(args: argparse.Namespace) -> None:
+    applied = apply_publication_delta(args.root, args.delta_root, args.public_key)
+    print("DELTA OK " + "; ".join(applied))
 
 
 def parser() -> argparse.ArgumentParser:
@@ -396,6 +411,19 @@ def parser() -> argparse.ArgumentParser:
     assemble_archive.add_argument("--asset-name", required=True)
     assemble_archive.add_argument("--output", type=Path, required=True)
     assemble_archive.set_defaults(run=command_assemble_archive)
+
+    create_delta = commands.add_parser("create-delta")
+    create_delta.add_argument("--root", type=Path, required=True)
+    create_delta.add_argument("--manifest", type=Path, action="append", required=True)
+    create_delta.add_argument("--public-key", type=Path, required=True)
+    create_delta.add_argument("--output", type=Path, required=True)
+    create_delta.set_defaults(run=command_create_delta)
+
+    apply_delta = commands.add_parser("apply-delta")
+    apply_delta.add_argument("--root", type=Path, required=True)
+    apply_delta.add_argument("--delta-root", type=Path, required=True)
+    apply_delta.add_argument("--public-key", type=Path, required=True)
+    apply_delta.set_defaults(run=command_apply_delta)
     return result
 
 

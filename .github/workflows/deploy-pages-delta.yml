@@ -1,0 +1,194 @@
+name: Deploy signed test-channel delta
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_release_tag:
+        description: Previous Release tag containing the complete snapshot
+        required: true
+        type: string
+      base_asset_name:
+        description: Previous complete snapshot asset name (without .partNNN)
+        required: true
+        type: string
+      release_tag:
+        description: Current Release tag containing the delta
+        required: true
+        type: string
+      delta_asset_name:
+        description: Current delta asset name (without .partNNN)
+        required: true
+        type: string
+      snapshot_asset_name:
+        description: Complete snapshot asset name to create on the current Release
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+
+      - name: Download previous complete snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_RELEASE_TAG: ${{ inputs.base_release_tag }}
+          BASE_ASSET_NAME: ${{ inputs.base_asset_name }}
+        run: |
+          mkdir -p base-download
+          gh release download "$BASE_RELEASE_TAG" \
+            --pattern "$BASE_ASSET_NAME*" \
+            --dir base-download
+          bmsir-arena-patch assemble-archive \
+            --parts-directory base-download \
+            --asset-name "$BASE_ASSET_NAME" \
+            --output assembled/base.tar.gz
+
+      - name: Download current delta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          DELTA_ASSET_NAME: ${{ inputs.delta_asset_name }}
+        run: |
+          mkdir -p delta-download
+          gh release download "$RELEASE_TAG" \
+            --pattern "$DELTA_ASSET_NAME*" \
+            --dir delta-download
+          bmsir-arena-patch assemble-archive \
+            --parts-directory delta-download \
+            --asset-name "$DELTA_ASSET_NAME" \
+            --output assembled/delta.tar.gz
+
+      - name: Extract archives safely
+        env:
+          TEST_PUBLIC_KEY: ${{ vars.ARENA_TEST_RELEASE_PUBLIC_KEY }}
+        run: |
+          test -n "$TEST_PUBLIC_KEY"
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import tarfile
+
+          for archive_name, destination_name in (
+              ("assembled/base.tar.gz", "site"),
+              ("assembled/delta.tar.gz", "delta"),
+          ):
+              destination = Path(destination_name)
+              destination.mkdir()
+              with tarfile.open(archive_name, "r:gz") as source:
+                  source.extractall(destination, filter="data")
+              for metadata in destination.rglob("._*"):
+                  if metadata.is_symlink() or not metadata.is_file():
+                      raise SystemExit(f"invalid AppleDouble metadata path: {metadata}")
+                  metadata.unlink()
+
+          Path("test-public-key.txt").write_text(
+              os.environ["TEST_PUBLIC_KEY"].strip() + "\n",
+              encoding="ascii",
+          )
+          PY
+
+      - name: Audit previous complete snapshot
+        run: |
+          bmsir-arena-patch audit \
+            --root site \
+            --manifest site/channels/test/windows-x64/manifest.json \
+            --manifest site/channels/test/macos-arm64/manifest.json \
+            --public-key test-public-key.txt
+
+      - name: Apply and audit strict delta
+        run: |
+          bmsir-arena-patch apply-delta \
+            --root site \
+            --delta-root delta \
+            --public-key test-public-key.txt
+          bmsir-arena-patch audit \
+            --root site \
+            --manifest site/channels/test/windows-x64/manifest.json \
+            --manifest site/channels/test/macos-arm64/manifest.json \
+            --public-key test-public-key.txt
+
+      # Make the verified delta live before archiving the complete tree. The
+      # recurring multi-gigabyte Release upload must not delay client updates.
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Build deterministic complete snapshot
+        env:
+          SNAPSHOT_ASSET_NAME: ${{ inputs.snapshot_asset_name }}
+        run: |
+          [[ "$SNAPSHOT_ASSET_NAME" =~ ^[A-Za-z0-9._-]+$ ]]
+          rm -rf base-download delta-download delta assembled
+          mkdir -p snapshot snapshot-parts
+          tar \
+            --sort=name \
+            --mtime='UTC 1970-01-01' \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -C site \
+            -cf - . | gzip -n > "snapshot/$SNAPSHOT_ASSET_NAME"
+          split \
+            -b 1900m \
+            -d \
+            -a 3 \
+            "snapshot/$SNAPSHOT_ASSET_NAME" \
+            "snapshot-parts/$SNAPSHOT_ASSET_NAME.part"
+          rm "snapshot/$SNAPSHOT_ASSET_NAME"
+
+      - name: Store complete snapshot for the next delta and rollback
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SNAPSHOT_ASSET_NAME: ${{ inputs.snapshot_asset_name }}
+        run: |
+          mapfile -t expected < <(find snapshot-parts -type f -print | sort)
+          test "${#expected[@]}" -gt 0
+
+          while IFS= read -r existing; do
+            [[ "$existing" == "$SNAPSHOT_ASSET_NAME"* ]] || continue
+            found=0
+            for path in "${expected[@]}"; do
+              if [[ "$(basename "$path")" == "$existing" ]]; then
+                found=1
+                break
+              fi
+            done
+            if [[ "$found" -ne 1 ]]; then
+              echo "unexpected existing snapshot asset: $existing" >&2
+              exit 1
+            fi
+          done < <(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')
+
+          for path in "${expected[@]}"; do
+            name="$(basename "$path")"
+            rm -rf existing-asset
+            mkdir existing-asset
+            if gh release download "$RELEASE_TAG" --pattern "$name" --dir existing-asset 2>/dev/null; then
+              cmp "$path" "existing-asset/$name"
+            else
+              gh release upload "$RELEASE_TAG" "$path"
+            fi
+          done
