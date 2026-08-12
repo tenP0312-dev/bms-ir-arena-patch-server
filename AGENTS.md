@@ -30,3 +30,13 @@ promoting a channel, revoking a version, rotating a key, or releasing binaries.
 Development progress notes are approval-free, but cannot authorize or replace
 those operations or a public announcement.
 
+An explicit operator request to distribute an Arena internal `test`-channel
+build is the narrow exception. After the exact source and artifacts pass their
+required tests, platform builds, signed-manifest/history audit, and artifact
+hash/size verification, that request authorizes the checked GitHub prerelease,
+signed test-channel promotion, GitHub Pages deployment, live verification, and
+isolated real-client acceptance as one operation. Do not ask for another exact-
+payload or per-version approval between those steps. This exception does not
+authorize stable or mandatory distribution, public Web changelog publication,
+Discord announcements, key rotation, revocation, or unrelated production
+operations.
