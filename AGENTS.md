@@ -22,6 +22,12 @@ repository. Read the tests around any behavior being changed.
   `docs/CODEX_PROGRESS_DISCORD.md`.
 - Run `python3 -m unittest discover -s tests -v` for code changes and
   `git diff --check` for every change.
+- Use the signed delta archive and `Deploy signed test-channel delta` workflow
+  for normal internal test-channel releases. The workflow-generated complete
+  snapshot on each successful Release is the base for the next delta.
+- Use `Deploy complete signed test-channel snapshot (seed or rollback)` only
+  for the first trusted seed or an explicit rollback. Do not make recurring
+  operator uploads of the complete append-only publication tree.
 
 ## Publication Boundary
 
