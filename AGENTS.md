@@ -13,6 +13,9 @@ repository. Read the tests around any behavior being changed.
 - Preserve unrelated changes and do not use destructive Git commands.
 - Use an Issue, scoped `codex/` branch, validation, pull request, and passing
   CI for implementation work.
+- Use the configured `gh` CLI from the first request for GitHub write actions,
+  including Issues and pull requests. Do not probe the connected GitHub app
+  first; its write path for this repository is already known to return `403`.
 - Use `apply_patch` for manual edits.
 - Never commit private signing keys, production credentials, generated release
   trees, or launcher binaries.
