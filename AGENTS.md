@@ -40,9 +40,22 @@ An explicit operator request to distribute an Arena internal `test`-channel
 build is the narrow exception. After the exact source and artifacts pass their
 required tests, platform builds, signed-manifest/history audit, and artifact
 hash/size verification, that request authorizes the checked GitHub prerelease,
-signed test-channel promotion, GitHub Pages deployment, live verification, and
-isolated real-client acceptance as one operation. Do not ask for another exact-
-payload or per-version approval between those steps. This exception does not
-authorize stable or mandatory distribution, public Web changelog publication,
-Discord announcements, key rotation, revocation, or unrelated production
-operations.
+signed test-channel promotion, GitHub Pages deployment, and the paired server
+gate sequence as one operation. Do not ask for another exact-payload or per-
+version approval between those steps.
+
+Every BMS-IR-built body or plugin made downloadable through the launcher is
+gate-bound, including internal test builds, prereleases, sparse updates, and
+stable releases. Before promoting the signed channel pointer, complete every
+applicable ordinary-score body/plugin allowlist and Arena client-version/build
+gate, required guarded service reload, and effective check under
+`BMS-Mania/IR`'s `docs/PRODUCTION_VPS_OPERATIONS.md`. Use only the exact
+artifacts named by the final signed manifest. Local previews, third-party or
+unreviewed builds, and launcher-only updates are excluded from body/plugin
+gates. Do not report a downloadable but rejected artifact as complete.
+
+Codex must not use Computer Use or launch, activate, focus, or control the
+launcher, updater, or game body for debugging or acceptance. Physical client
+evidence is operator-run. This exception does not authorize stable or
+mandatory distribution, public Web changelog publication, Discord
+announcements, key rotation, revocation, or unrelated production operations.

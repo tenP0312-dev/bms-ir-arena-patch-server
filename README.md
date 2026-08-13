@@ -47,6 +47,15 @@ fails.
 
 ## Operator flow
 
+Before promoting a channel pointer that adds or replaces a BMS-IR-built body
+or plugin, complete the paired server gate sequence in `BMS-Mania/IR`'s
+`docs/PRODUCTION_VPS_OPERATIONS.md`. This applies to internal test,
+prerelease, sparse, and stable updates: stage the exact final artifacts, add
+and verify the ordinary-score body/plugin allowlists and Arena client-version/
+build gates where applicable, perform required guarded reloads, and only then
+make the artifact downloadable through the launcher. A launcher-only update
+has no body/plugin gate to add.
+
 Use a non-production test key for internal builds. Never commit a private key.
 
 ```sh
