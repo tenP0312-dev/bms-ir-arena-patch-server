@@ -25,12 +25,14 @@ from .manifest import (
     fetch_manifest,
     load_private_key,
     load_public_key,
+    latest_launcher_reference,
     safe_artifact_path,
     sign_history,
     sign_manifest,
     validate_manifest,
     verify_artifacts,
     verify_history,
+    verify_history_latest_launcher,
     verify_manifest,
 )
 
@@ -162,6 +164,31 @@ def command_draft(args: argparse.Namespace) -> None:
         version=args.version,
         published_at=signed["published_at"],
     )
+    history_manifests: list[dict[str, object]] = []
+    for entry in history["versions"]:
+        entry_version = str(entry["version"])
+        entry_path = (
+            args.root
+            / "channels"
+            / args.channel
+            / args.platform
+            / "manifests"
+            / f"{entry_version}.json"
+        )
+        entry_manifest = read_manifest(entry_path)
+        verify_manifest(entry_manifest, private_key.public_key())
+        if (
+            entry_manifest.get("channel") != args.channel
+            or entry_manifest.get("platform") != args.platform
+            or str(entry_manifest.get("version")) != entry_version
+        ):
+            raise ManifestError(
+                f"history entry manifest does not match its own version: {entry_version}"
+            )
+        history_manifests.append(entry_manifest)
+    latest_launcher = latest_launcher_reference(history_manifests)
+    if latest_launcher is not None:
+        history["latest_launcher"] = latest_launcher
     write_json_atomic(history_path, sign_history(history, private_key))
 
     print(target)
@@ -218,6 +245,7 @@ def audit_publication(root: Path, manifest_paths: list[Path], public_key: Path) 
         # downgrade_to_version_from), so its own versioned manifest and
         # release artifacts belong in the published tree too, not just the
         # current channel pointer's.
+        history_manifests = [manifest]
         for entry in history.get("versions", []):
             entry_version = str(entry.get("version"))
             if entry_version == str(manifest["version"]):
@@ -233,12 +261,14 @@ def audit_publication(root: Path, manifest_paths: list[Path], public_key: Path) 
                 raise ManifestError(
                     f"history entry manifest does not match its own version: {entry_version}"
                 )
+            history_manifests.append(entry_manifest)
             expected.add(entry_versioned_relative.as_posix())
             entry_release_base = base / "releases" / entry_version
             for artifact in entry_manifest["artifacts"]:
                 expected.add(
                     (entry_release_base / safe_artifact_path(str(artifact["path"]))).as_posix()
                 )
+        verify_history_latest_launcher(history, history_manifests)
         audited.append(f"{manifest['channel']} {manifest['platform']} {manifest['version']}")
     paths = list(root.rglob("*"))
     if any(path.is_symlink() for path in paths):

@@ -21,11 +21,13 @@ from arena_patch_server.manifest import (
     build_manifest,
     check_update,
     fetch_manifest,
+    latest_launcher_reference,
     sign_history,
     sign_manifest,
     safe_artifact_path,
     verify_artifacts,
     verify_history,
+    verify_history_latest_launcher,
     verify_manifest,
 )
 from arena_patch_server.cli import command_audit, command_draft, write_json_atomic
@@ -290,6 +292,7 @@ class PatchServerTest(unittest.TestCase):
         source = self.root / "history-source"
         source.mkdir()
         (source / "Arena.jar").write_bytes(b"arena")
+        (source / "BMS-IR Arena Test.exe").write_bytes(b"launcher")
         private_key = self.root / "history-test.key"
         private_key.write_text(
             base64.b64encode(
@@ -302,7 +305,7 @@ class PatchServerTest(unittest.TestCase):
             encoding="ascii",
         )
 
-        def draft_args(version: str):
+        def draft_args(version: str, launcher_version: str | None = None):
             return type("Args", (), {
                 "root": self.root / "history-publication",
                 "source": source,
@@ -316,15 +319,22 @@ class PatchServerTest(unittest.TestCase):
                 "announcements_file": None,
                 "mandatory": False,
                 "minimum_launcher_version": "0.1.0",
+                "launcher_version": launcher_version,
                 "revoke": [],
-                "artifact": ["Arena.jar"],
+                "artifact": ["Arena.jar"] + (
+                    ["BMS-IR Arena Test.exe"] if launcher_version else []
+                ),
             })()
 
-        command_draft(draft_args("0.4.14"))
+        command_draft(draft_args("0.4.14", "0.2.24"))
         history_path = self.root / "history-publication/channels/test/windows-x64/history.json"
         history = json.loads(history_path.read_text(encoding="utf-8"))
         verify_history(history, self.public)
         self.assertEqual(["0.4.14"], [entry["version"] for entry in history["versions"]])
+        self.assertEqual(
+            {"release_version": "0.4.14", "launcher_version": "0.2.24"},
+            history["latest_launcher"],
+        )
 
         command_draft(draft_args("0.4.15"))
         history = json.loads(history_path.read_text(encoding="utf-8"))
@@ -336,6 +346,10 @@ class PatchServerTest(unittest.TestCase):
         self.assertEqual(
             1,
             len([entry for entry in history["versions"] if entry["version"] == "0.4.14"]),
+        )
+        self.assertEqual(
+            {"release_version": "0.4.14", "launcher_version": "0.2.24"},
+            history["latest_launcher"],
         )
 
     def test_history_entry_is_immutable(self) -> None:
@@ -365,6 +379,57 @@ class PatchServerTest(unittest.TestCase):
         verify_history(signed, self.public)
         tampered = json.loads(json.dumps(signed))
         tampered["versions"][0]["version"] = "9.9.9"
+        with self.assertRaisesRegex(ManifestError, "signature"):
+            verify_history(tampered, self.public)
+
+    def test_latest_launcher_reference_is_signed_and_matches_manifests(self) -> None:
+        history = append_history_version(
+            [],
+            channel="test",
+            platform="windows-x64",
+            version="0.4.14.36",
+            published_at="2026-08-13T01:00:00Z",
+        )
+        history = append_history_version(
+            history["versions"],
+            channel="test",
+            platform="windows-x64",
+            version="0.4.14.037",
+            published_at="2026-08-13T00:00:00Z",
+        )
+        manifests = [
+            {
+                "version": "0.4.14.36",
+                "published_at": "2026-08-13T01:00:00Z",
+                "launcher_version": "0.2.22",
+            },
+            {
+                "version": "0.4.14.037",
+                "published_at": "2026-08-13T00:00:00Z",
+                "launcher_version": "0.2.23",
+            },
+        ]
+        history["latest_launcher"] = latest_launcher_reference(manifests)
+        signed = sign_history(history, self.private)
+        verify_history(signed, self.public)
+        verify_history_latest_launcher(signed, manifests)
+        self.assertEqual(
+            {"release_version": "0.4.14.037", "launcher_version": "0.2.23"},
+            signed["latest_launcher"],
+        )
+
+        inconsistent = json.loads(json.dumps(signed))
+        inconsistent["latest_launcher"] = {
+            "release_version": "0.4.14.36",
+            "launcher_version": "0.2.22",
+        }
+        inconsistent = sign_history(inconsistent, self.private)
+        verify_history(inconsistent, self.public)
+        with self.assertRaisesRegex(ManifestError, "does not match"):
+            verify_history_latest_launcher(inconsistent, manifests)
+
+        tampered = json.loads(json.dumps(signed))
+        tampered["latest_launcher"]["launcher_version"] = "9.9.9"
         with self.assertRaisesRegex(ManifestError, "signature"):
             verify_history(tampered, self.public)
 
