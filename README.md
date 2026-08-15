@@ -20,6 +20,10 @@ channels/test/macos-arm64/releases/0.4.14/BMS-IR Arena Test.app/Contents/MacOS/b
 
 `history.json` is a signed, append-only index of every version ever drafted
 for that channel/platform (`{version, published_at}` pairs, newest first).
+It may also carry a signed `latest_launcher` pointer containing the release
+version and maximum launcher version. New launchers use that pointer to fetch
+only the selected versioned manifest; older launchers ignore the additive
+field and continue their complete signed-history scan.
 `draft` creates or updates it automatically; an existing entry's
 `published_at` can never change once recorded, so the index cannot silently
 rewrite when an older release actually shipped. Nothing is ever removed from

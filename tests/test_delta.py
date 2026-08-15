@@ -64,18 +64,32 @@ class PublicationDeltaTest(unittest.TestCase):
         version: str,
         published_at: str,
         payload: bytes,
+        launcher_version: str | None = None,
     ) -> Path:
         source = self.workspace / f"source-{root.name}-{platform}-{version}"
         source.mkdir()
         (source / "Arena.jar").write_bytes(payload)
+        artifacts = ["Arena.jar"]
+        if launcher_version:
+            launcher_path = (
+                "BMS-IR Arena Test.exe"
+                if platform == "windows-x64"
+                else "BMS-IR Arena Test.app/Contents/MacOS/bmsir-arena-launcher"
+            )
+            launcher = source / launcher_path
+            launcher.parent.mkdir(parents=True, exist_ok=True)
+            launcher.write_bytes(f"launcher-{launcher_version}".encode())
+            launcher.chmod(0o755)
+            artifacts.append(launcher_path)
         manifest = sign_manifest(
             build_manifest(
                 source,
-                ["Arena.jar"],
+                artifacts,
                 channel="test",
                 platform=platform,
                 version=version,
                 published_at=published_at,
+                launcher_version=launcher_version,
             ),
             self.private,
         )
@@ -83,14 +97,21 @@ class PublicationDeltaTest(unittest.TestCase):
         release = base / "releases" / version
         release.mkdir(parents=True)
         (release / "Arena.jar").write_bytes(payload)
+        if launcher_version:
+            launcher_destination = release / artifacts[1]
+            launcher_destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source / artifacts[1], launcher_destination)
         pointer = base / "manifest.json"
         write_json_atomic(pointer, manifest)
         write_json_atomic(base / "manifests" / f"{version}.json", manifest)
 
         versions: list[dict[str, object]] = []
+        latest_launcher: dict[str, str] | None = None
         history_path = base / "history.json"
         if history_path.exists():
-            versions = json.loads(history_path.read_text(encoding="utf-8"))["versions"]
+            existing_history = json.loads(history_path.read_text(encoding="utf-8"))
+            versions = existing_history["versions"]
+            latest_launcher = existing_history.get("latest_launcher")
         history = append_history_version(
             versions,
             channel="test",
@@ -98,6 +119,13 @@ class PublicationDeltaTest(unittest.TestCase):
             version=version,
             published_at=published_at,
         )
+        if launcher_version:
+            latest_launcher = {
+                "release_version": version,
+                "launcher_version": launcher_version,
+            }
+        if latest_launcher:
+            history["latest_launcher"] = latest_launcher
         write_json_atomic(history_path, sign_history(history, self.private))
         return pointer
 
@@ -178,6 +206,49 @@ class PublicationDeltaTest(unittest.TestCase):
                 self.base / "channels/test/windows-x64/manifest.json",
                 self.base / "channels/test/macos-arm64/manifest.json",
             ],
+            self.public_key,
+        )
+
+    def test_accepts_a_signed_latest_launcher_pointer(self) -> None:
+        base = self.workspace / "launcher-base"
+        target = self.workspace / "launcher-target"
+        self._publish(
+            base,
+            platform="windows-x64",
+            version="1.0.0",
+            published_at="2026-08-10T00:00:00Z",
+            payload=b"body",
+        )
+        shutil.copytree(base, target)
+        pointer = self._publish(
+            target,
+            platform="windows-x64",
+            version="1.0.1",
+            published_at="2026-08-11T00:00:00Z",
+            payload=b"body",
+            launcher_version="0.2.25",
+        )
+        archive_path = self.workspace / "launcher-delta.tar.gz"
+        delta = self.workspace / "launcher-delta"
+        create_publication_delta(target, [pointer], self.public_key, archive_path)
+        delta.mkdir()
+        with tarfile.open(archive_path, "r:gz") as archive:
+            archive.extractall(delta, filter="data")
+
+        self.assertEqual(
+            ["test windows-x64 1.0.1"],
+            apply_publication_delta(base, delta, self.public_key),
+        )
+        history = json.loads(
+            (base / "channels/test/windows-x64/history.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            {"release_version": "1.0.1", "launcher_version": "0.2.25"},
+            history["latest_launcher"],
+        )
+        audit_publication(
+            base,
+            [base / "channels/test/windows-x64/manifest.json"],
             self.public_key,
         )
 

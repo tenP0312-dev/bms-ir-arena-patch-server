@@ -413,6 +413,22 @@ def validate_history(history: dict[str, Any], *, require_signature: bool = True)
         if folded in seen:
             raise ManifestError(f"duplicate history version: {version}")
         seen.add(folded)
+    latest_launcher = history.get("latest_launcher")
+    if latest_launcher is not None:
+        if not isinstance(latest_launcher, dict) or set(latest_launcher) != {
+            "release_version",
+            "launcher_version",
+        }:
+            raise ManifestError("latest_launcher fields are invalid")
+        release_version = latest_launcher.get("release_version")
+        launcher_version = latest_launcher.get("launcher_version")
+        if (
+            not isinstance(release_version, str)
+            or release_version.casefold() not in seen
+            or not isinstance(launcher_version, str)
+            or not VERSION_RE.fullmatch(launcher_version)
+        ):
+            raise ManifestError("latest_launcher is invalid")
     if require_signature and not str(history.get("signature") or ""):
         raise ManifestError("signature is required")
 
@@ -469,6 +485,51 @@ def append_history_version(
     }
     validate_history(history, require_signature=False)
     return history
+
+
+def latest_launcher_reference(
+    manifests: Iterable[Mapping[str, object]],
+) -> dict[str, str] | None:
+    """Return the release carrying the maximum declared launcher version."""
+    latest: dict[str, str] | None = None
+    latest_published_at = ""
+    for manifest in manifests:
+        launcher_version = str(manifest.get("launcher_version") or "").strip()
+        if not launcher_version:
+            continue
+        candidate = {
+            "release_version": str(manifest.get("version") or "").strip(),
+            "launcher_version": launcher_version,
+        }
+        if (
+            latest is None
+            or version_key(launcher_version) > version_key(latest["launcher_version"])
+            or (
+                version_key(launcher_version) == version_key(latest["launcher_version"])
+                and str(manifest.get("published_at") or "") > latest_published_at
+            )
+        ):
+            latest = candidate
+            latest_published_at = str(manifest.get("published_at") or "")
+    return latest
+
+
+def verify_history_latest_launcher(
+    history: Mapping[str, object],
+    manifests: Iterable[Mapping[str, object]],
+) -> None:
+    """Verify an advertised launcher pointer against its signed manifests.
+
+    Legacy history without the optional pointer remains valid. Once present,
+    the pointer must name the exact release carrying the maximum launcher
+    version in the append-only history.
+    """
+    advertised = history.get("latest_launcher")
+    if advertised is None:
+        return
+    expected = latest_launcher_reference(manifests)
+    if advertised != expected:
+        raise ManifestError("latest_launcher does not match signed history manifests")
 
 
 def verify_artifacts(root: Path, manifest: dict[str, Any]) -> None:
