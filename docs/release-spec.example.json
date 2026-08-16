@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "channel": "test",
+  "version": "0.4.14.48",
+  "release_tag": "test-0.4.14.48",
+  "signing_key_ref": "arena-test-current",
+  "base": {
+    "release_tag": "test-0.4.14.47",
+    "asset_name": "bmsir-arena-test-channel-0.4.14.47-complete.tar.gz"
+  },
+  "delta_asset_name": "bmsir-arena-test-channel-0.4.14.48-delta.tar.gz",
+  "snapshot_asset_name": "bmsir-arena-test-channel-0.4.14.48-complete.tar.gz",
+  "source_commits": {
+    "oraja": "0123456789abcdef0123456789abcdef01234567",
+    "plugin": "123456789abcdef0123456789abcdef012345678",
+    "server": "23456789abcdef0123456789abcdef0123456789"
+  },
+  "server_gate": {
+    "client_version": "0.4.14.48",
+    "build_hash": "01234567",
+    "plugin_required": true
+  },
+  "platforms": [
+    {
+      "platform": "windows-x64",
+      "source": "/release/package/windows",
+      "notes_ja_file": "/release/notes-ja.md",
+      "notes_en_file": "/release/notes-en.md",
+      "announcements_file": "/release/announcements.json",
+      "artifacts": [
+        "Arena-oraja.jar",
+        "ir/bms_ir_arena_oraja_RELEASE.jar"
+      ]
+    },
+    {
+      "platform": "macos-arm64",
+      "source": "/release/package/macos",
+      "notes_ja_file": "/release/notes-ja.md",
+      "notes_en_file": "/release/notes-en.md",
+      "announcements_file": "/release/announcements.json",
+      "artifacts": [
+        "Arena-oraja.jar",
+        "ir/bms_ir_arena_oraja_RELEASE.jar"
+      ]
+    }
+  ]
+}
