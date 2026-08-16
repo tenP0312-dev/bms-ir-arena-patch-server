@@ -128,7 +128,7 @@ def command_draft(args: argparse.Namespace) -> None:
         channel=args.channel,
         platform=args.platform,
         version=args.version,
-        published_at=timestamp(),
+        published_at=getattr(args, "published_at", None) or timestamp(),
         release_notes_markdown=notes,
         release_notes_markdown_ja=notes_ja,
         release_notes_markdown_en=notes_en,
@@ -354,6 +354,22 @@ def command_apply_delta(args: argparse.Namespace) -> None:
     print("DELTA OK " + "; ".join(applied))
 
 
+def command_prepare_release(args: argparse.Namespace) -> None:
+    # Imported lazily so the transactional helper can reuse the stable
+    # draft/promote/audit primitives in this module without an import cycle.
+    from .release import prepare_release
+
+    print(
+        prepare_release(
+            spec_path=args.spec,
+            base_archive=args.base_archive,
+            private_key_path=args.private_key,
+            public_key_path=args.public_key,
+            output_dir=args.output_dir,
+        )
+    )
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="bmsir-arena-patch")
     commands = result.add_subparsers(dest="command", required=True)
@@ -369,6 +385,7 @@ def parser() -> argparse.ArgumentParser:
     draft.add_argument("--channel", choices=("stable", "test"), required=True)
     draft.add_argument("--platform", choices=("windows-x64", "macos-arm64"), required=True)
     draft.add_argument("--version", required=True)
+    draft.add_argument("--published-at", help="fixed ISO timestamp for coordinated drafts")
     draft.add_argument("--notes-file", type=Path)
     draft.add_argument("--notes-ja-file", type=Path)
     draft.add_argument("--notes-en-file", type=Path)
@@ -454,6 +471,17 @@ def parser() -> argparse.ArgumentParser:
     apply_delta.add_argument("--delta-root", type=Path, required=True)
     apply_delta.add_argument("--public-key", type=Path, required=True)
     apply_delta.set_defaults(run=command_apply_delta)
+
+    prepare_release = commands.add_parser(
+        "prepare-release",
+        help="transactionally prepare a signed release from a trusted base snapshot",
+    )
+    prepare_release.add_argument("--spec", type=Path, required=True)
+    prepare_release.add_argument("--base-archive", type=Path, required=True)
+    prepare_release.add_argument("--private-key", type=Path, required=True)
+    prepare_release.add_argument("--public-key", type=Path, required=True)
+    prepare_release.add_argument("--output-dir", type=Path, required=True)
+    prepare_release.set_defaults(run=command_prepare_release)
     return result
 
 

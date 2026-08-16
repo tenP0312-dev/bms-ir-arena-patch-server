@@ -160,6 +160,37 @@ bmsir-arena-patch probe \
 
 ## GitHub Pages test-channel hosting
 
+Prepare a normal release with one transactional command. The machine-readable
+spec names the reviewed source commits, Arena server-gate identity, previous
+snapshot, both platform sources, notes, and workflow asset names. Keep the
+private-key path out of the spec and use a stable `signing_key_ref` label. The
+command derives the private key's public key and compares it with the expected
+public-key file before creating any output.
+
+```sh
+bmsir-arena-patch prepare-release \
+  --spec release-spec.json \
+  --base-archive previous-complete-snapshot.tar.gz \
+  --private-key /protected/arena-test-current.key \
+  --public-key /protected/arena-test-current.pub \
+  --output-dir prepared-test-0.4.14.48
+```
+
+The command extracts the previous complete snapshot into a new temporary tree,
+audits it, drafts and promotes every specified platform with one timestamp,
+audits the complete result, creates the signed delta, and only then atomically
+exposes the output directory. It writes `release-state.json` with exact GitHub
+workflow inputs and artifact identities. A failed key check, draft, audit, or
+delta build leaves no reusable partial output.
+
+Normal `release_uploads` contains only the signed delta. Do not upload duplicate
+standalone body/plugin assets just for convenience; add a path to
+`standalone_release_assets` only when an explicit fallback or direct-download
+requirement has been reviewed.
+
+Start from `docs/release-spec.example.json`; paths may be absolute or relative
+to the spec file.
+
 The repository's GitHub Pages site serves the generated tree at
 `https://tenp0312-dev.github.io/bms-ir-arena-patch-server/`.
 
