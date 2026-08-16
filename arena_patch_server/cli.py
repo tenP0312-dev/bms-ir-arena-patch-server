@@ -23,6 +23,7 @@ from .manifest import (
     bootstrap_metadata,
     build_manifest,
     fetch_manifest,
+    file_artifact,
     load_private_key,
     load_public_key,
     latest_launcher_reference,
@@ -30,10 +31,19 @@ from .manifest import (
     sign_history,
     sign_manifest,
     validate_manifest,
-    verify_artifacts,
     verify_history,
     verify_history_latest_launcher,
     verify_manifest,
+)
+from .locations import (
+    ARTIFACT_LOCATIONS_NAME,
+    ARTIFACT_LOCATIONS_REFERENCE,
+    location_for_artifact,
+    location_key,
+    release_asset_name,
+    verify_artifact_locations,
+    verify_location_source,
+    verify_remote_location,
 )
 
 
@@ -148,6 +158,7 @@ def command_draft(args: argparse.Namespace) -> None:
 
     history_path = args.root / "channels" / args.channel / args.platform / "history.json"
     existing_versions: list[dict[str, object]] = []
+    existing_artifact_locations: dict[str, str] | None = None
     if history_path.exists():
         existing_history = read_manifest(history_path)
         verify_history(existing_history, private_key.public_key())
@@ -157,6 +168,7 @@ def command_draft(args: argparse.Namespace) -> None:
         ):
             raise ManifestError("history channel/platform mismatch")
         existing_versions = existing_history.get("versions", [])
+        existing_artifact_locations = existing_history.get("artifact_locations")
     history = append_history_version(
         existing_versions,
         channel=args.channel,
@@ -189,15 +201,77 @@ def command_draft(args: argparse.Namespace) -> None:
     latest_launcher = latest_launcher_reference(history_manifests)
     if latest_launcher is not None:
         history["latest_launcher"] = latest_launcher
+    if existing_artifact_locations is not None:
+        history["artifact_locations"] = existing_artifact_locations
     write_json_atomic(history_path, sign_history(history, private_key))
 
     print(target)
 
 
+def _locations_path(root: Path, channel: str, platform: str) -> Path:
+    return root / "channels" / channel / platform / ARTIFACT_LOCATIONS_NAME
+
+
+def _read_verified_locations(
+    root: Path,
+    channel: str,
+    platform: str,
+    public_key_value: object,
+) -> dict[str, object] | None:
+    path = _locations_path(root, channel, platform)
+    if not path.exists():
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise ManifestError("artifact-location index is missing or unsafe")
+    locations = read_manifest(path)
+    verify_artifact_locations(locations, public_key_value)
+    if locations.get("channel") != channel or locations.get("platform") != platform:
+        raise ManifestError("artifact-location channel/platform mismatch")
+    return locations
+
+
+def _release_artifact_path(
+    root: Path, manifest: dict[str, object], artifact: dict[str, object]
+) -> Path:
+    return (
+        root
+        / "channels"
+        / str(manifest["channel"])
+        / str(manifest["platform"])
+        / "releases"
+        / str(manifest["version"])
+        / safe_artifact_path(artifact["path"])
+    )
+
+
+def _verify_one_artifact(
+    root: Path,
+    manifest: dict[str, object],
+    artifact: dict[str, object],
+    locations: dict[str, object] | None,
+) -> None:
+    local = _release_artifact_path(root, manifest, artifact)
+    location = location_for_artifact(locations, str(manifest["version"]), artifact)
+    if location is None:
+        actual = file_artifact(local.parent, local.name)
+        if actual["sha256"] != artifact["sha256"] or actual["size"] != artifact["size"]:
+            raise ManifestError(f"artifact mismatch: {artifact['path']}")
+        return
+    if local.exists() or local.is_symlink():
+        actual = file_artifact(local.parent, local.name)
+        if actual["sha256"] != artifact["sha256"] or actual["size"] != artifact["size"]:
+            raise ManifestError(f"artifact mismatch: {artifact['path']}")
+
+
 def verified_manifest(root: Path, path: Path, public_key: Path) -> dict[str, object]:
     manifest = read_manifest(path)
-    verify_manifest(manifest, load_public_key(public_key))
-    verify_artifacts(root, manifest)
+    public_key_value = load_public_key(public_key)
+    verify_manifest(manifest, public_key_value)
+    locations = _read_verified_locations(
+        root, str(manifest["channel"]), str(manifest["platform"]), public_key_value
+    )
+    for artifact in manifest["artifacts"]:
+        _verify_one_artifact(root, manifest, artifact, locations)
     return manifest
 
 
@@ -206,11 +280,21 @@ def command_verify(args: argparse.Namespace) -> None:
     print(f"OK {manifest['channel']} {manifest['platform']} {manifest['version']}")
 
 
-def audit_publication(root: Path, manifest_paths: list[Path], public_key: Path) -> list[str]:
+def audit_publication(
+    root: Path,
+    manifest_paths: list[Path],
+    public_key: Path,
+    *,
+    external_assets_directory: Path | None = None,
+    verify_remote: bool = False,
+) -> list[str]:
     expected: set[str] = set()
     audited: list[str] = []
+    public_key_value = load_public_key(public_key)
+    verified_remote: set[tuple[str, str, int]] = set()
     for manifest_path in manifest_paths:
-        manifest = verified_manifest(root, manifest_path, public_key)
+        manifest = read_manifest(manifest_path)
+        verify_manifest(manifest, public_key_value)
         base = PurePosixPath("channels") / str(manifest["channel"]) / str(manifest["platform"])
         pointer_relative = base / "manifest.json"
         versioned_relative = base / "manifests" / f"{manifest['version']}.json"
@@ -226,7 +310,7 @@ def audit_publication(root: Path, manifest_paths: list[Path], public_key: Path) 
         if not history_path.is_file():
             raise ManifestError("history index is missing for a published channel")
         history = read_manifest(history_path)
-        verify_history(history, load_public_key(public_key))
+        verify_history(history, public_key_value)
         if history.get("channel") != manifest["channel"] or history.get("platform") != manifest["platform"]:
             raise ManifestError("history channel/platform mismatch")
         if not any(
@@ -235,11 +319,18 @@ def audit_publication(root: Path, manifest_paths: list[Path], public_key: Path) 
         ):
             raise ManifestError("history index is missing the current channel version")
         expected.add(history_relative.as_posix())
-        release_base = base / "releases" / str(manifest["version"])
-        for artifact in manifest["artifacts"]:
-            expected.add(
-                (release_base / safe_artifact_path(str(artifact["path"]))).as_posix()
+        locations = _read_verified_locations(
+            root, str(manifest["channel"]), str(manifest["platform"]), public_key_value
+        )
+        advertised_locations = history.get("artifact_locations")
+        if (locations is None) != (advertised_locations is None):
+            raise ManifestError(
+                "signed history and artifact-location index presence do not match"
             )
+        if advertised_locations is not None:
+            if advertised_locations != ARTIFACT_LOCATIONS_REFERENCE:
+                raise ManifestError("artifact_locations reference is invalid")
+            expected.add((base / ARTIFACT_LOCATIONS_NAME).as_posix())
         # Every other version listed in the signed history is a legitimate
         # downgrade target the launcher can fetch (see update.rs
         # downgrade_to_version_from), so its own versioned manifest and
@@ -252,7 +343,8 @@ def audit_publication(root: Path, manifest_paths: list[Path], public_key: Path) 
                 continue
             entry_versioned_relative = base / "manifests" / f"{entry_version}.json"
             entry_versioned_path = root.joinpath(*entry_versioned_relative.parts)
-            entry_manifest = verified_manifest(root, entry_versioned_path, public_key)
+            entry_manifest = read_manifest(entry_versioned_path)
+            verify_manifest(entry_manifest, public_key_value)
             if (
                 entry_manifest["channel"] != manifest["channel"]
                 or entry_manifest["platform"] != manifest["platform"]
@@ -263,12 +355,59 @@ def audit_publication(root: Path, manifest_paths: list[Path], public_key: Path) 
                 )
             history_manifests.append(entry_manifest)
             expected.add(entry_versioned_relative.as_posix())
-            entry_release_base = base / "releases" / entry_version
-            for artifact in entry_manifest["artifacts"]:
-                expected.add(
-                    (entry_release_base / safe_artifact_path(str(artifact["path"]))).as_posix()
-                )
         verify_history_latest_launcher(history, history_manifests)
+
+        seen_locations: set[tuple[str, str]] = set()
+        for entry_manifest in history_manifests:
+            release_base = base / "releases" / str(entry_manifest["version"])
+            for artifact in entry_manifest["artifacts"]:
+                relative = (
+                    release_base / safe_artifact_path(str(artifact["path"]))
+                ).as_posix()
+                local = root.joinpath(*PurePosixPath(relative).parts)
+                location = location_for_artifact(
+                    locations, str(entry_manifest["version"]), artifact
+                )
+                if location is None:
+                    expected.add(relative)
+                    _verify_one_artifact(root, entry_manifest, artifact, locations)
+                    continue
+                seen_locations.add(
+                    location_key(location["version"], location["path"])
+                )
+                if bool(location["retain_on_pages"]):
+                    expected.add(relative)
+                    if not local.exists() and not local.is_symlink():
+                        raise ManifestError(
+                            f"retained compatibility artifact is missing: {relative}"
+                        )
+                    _verify_one_artifact(root, entry_manifest, artifact, locations)
+                elif local.exists() or local.is_symlink():
+                    raise ManifestError(
+                        f"external artifact must not remain on Pages: {relative}"
+                    )
+                if external_assets_directory is not None:
+                    source = external_assets_directory / release_asset_name(str(location["url"]))
+                    verify_location_source(location, source)
+                if verify_remote:
+                    remote_identity = (
+                        str(location["url"]),
+                        str(location["sha256"]),
+                        int(location["size"]),
+                    )
+                    if remote_identity not in verified_remote:
+                        verify_remote_location(location)
+                        verified_remote.add(remote_identity)
+        if locations is not None:
+            indexed = {
+                location_key(entry["version"], entry["path"])
+                for entry in locations["locations"]
+            }
+            if indexed != seen_locations:
+                missing = sorted(indexed - seen_locations)
+                raise ManifestError(
+                    f"artifact-location index contains unsigned history entries: {missing[:3]}"
+                )
         audited.append(f"{manifest['channel']} {manifest['platform']} {manifest['version']}")
     paths = list(root.rglob("*"))
     if any(path.is_symlink() for path in paths):
@@ -283,7 +422,13 @@ def audit_publication(root: Path, manifest_paths: list[Path], public_key: Path) 
 
 def command_audit(args: argparse.Namespace) -> None:
     manifest_paths = args.manifest if isinstance(args.manifest, list) else [args.manifest]
-    audited = audit_publication(args.root, manifest_paths, args.public_key)
+    audited = audit_publication(
+        args.root,
+        manifest_paths,
+        args.public_key,
+        external_assets_directory=getattr(args, "external_assets_directory", None),
+        verify_remote=bool(getattr(args, "verify_remote", False)),
+    )
     print("AUDIT OK " + "; ".join(audited))
 
 
@@ -350,7 +495,12 @@ def command_create_delta(args: argparse.Namespace) -> None:
 
 
 def command_apply_delta(args: argparse.Namespace) -> None:
-    applied = apply_publication_delta(args.root, args.delta_root, args.public_key)
+    applied = apply_publication_delta(
+        args.root,
+        args.delta_root,
+        args.public_key,
+        verify_remote=bool(getattr(args, "verify_remote", False)),
+    )
     print("DELTA OK " + "; ".join(applied))
 
 
@@ -366,6 +516,22 @@ def command_prepare_release(args: argparse.Namespace) -> None:
             private_key_path=args.private_key,
             public_key_path=args.public_key,
             output_dir=args.output_dir,
+        )
+    )
+
+
+def command_externalize_publication(args: argparse.Namespace) -> None:
+    from .migration import externalize_publication
+
+    print(
+        externalize_publication(
+            root=args.root,
+            private_key_path=args.private_key,
+            public_key_path=args.public_key,
+            repository=args.repository,
+            release_tag=args.release_tag,
+            output_dir=args.output_dir,
+            retain_files=args.retain_file,
         )
     )
 
@@ -413,6 +579,16 @@ def parser() -> argparse.ArgumentParser:
     audit.add_argument("--root", type=Path, required=True)
     audit.add_argument("--manifest", type=Path, action="append", required=True)
     audit.add_argument("--public-key", type=Path, required=True)
+    audit.add_argument(
+        "--external-assets-directory",
+        type=Path,
+        help="verify external GitHub Release assets against staged local bytes",
+    )
+    audit.add_argument(
+        "--verify-remote",
+        action="store_true",
+        help="download and hash every indexed GitHub Release artifact",
+    )
     audit.set_defaults(run=command_audit)
 
     promote_parser = commands.add_parser("promote")
@@ -470,6 +646,11 @@ def parser() -> argparse.ArgumentParser:
     apply_delta.add_argument("--root", type=Path, required=True)
     apply_delta.add_argument("--delta-root", type=Path, required=True)
     apply_delta.add_argument("--public-key", type=Path, required=True)
+    apply_delta.add_argument(
+        "--verify-remote",
+        action="store_true",
+        help="download and hash newly indexed GitHub Release artifacts before applying",
+    )
     apply_delta.set_defaults(run=command_apply_delta)
 
     prepare_release = commands.add_parser(
@@ -482,6 +663,19 @@ def parser() -> argparse.ArgumentParser:
     prepare_release.add_argument("--public-key", type=Path, required=True)
     prepare_release.add_argument("--output-dir", type=Path, required=True)
     prepare_release.set_defaults(run=command_prepare_release)
+
+    externalize = commands.add_parser(
+        "externalize-publication",
+        help="prepare a non-destructive metadata-only Pages migration",
+    )
+    externalize.add_argument("--root", type=Path, required=True)
+    externalize.add_argument("--private-key", type=Path, required=True)
+    externalize.add_argument("--public-key", type=Path, required=True)
+    externalize.add_argument("--repository", required=True)
+    externalize.add_argument("--release-tag", required=True)
+    externalize.add_argument("--output-dir", type=Path, required=True)
+    externalize.add_argument("--retain-file", action="append", default=[])
+    externalize.set_defaults(run=command_externalize_publication)
     return result
 
 

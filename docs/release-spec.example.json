@@ -3,6 +3,7 @@
   "channel": "test",
   "version": "0.4.14.48",
   "release_tag": "test-0.4.14.48",
+  "artifact_repository": "tenP0312-dev/bms-ir-arena-patch-server",
   "signing_key_ref": "arena-test-current",
   "base": {
     "release_tag": "test-0.4.14.47",
@@ -28,8 +29,16 @@
       "notes_en_file": "/release/notes-en.md",
       "announcements_file": "/release/announcements.json",
       "artifacts": [
-        "Arena-oraja.jar",
-        "ir/bms_ir_arena_oraja_RELEASE.jar"
+        {
+          "path": "Arena-oraja.jar",
+          "asset_name": "windows-x64-Arena-oraja.jar",
+          "retain_on_pages": false
+        },
+        {
+          "path": "ir/bms_ir_arena_oraja_RELEASE.jar",
+          "asset_name": "windows-x64-bms_ir_arena_oraja_RELEASE.jar",
+          "retain_on_pages": false
+        }
       ]
     },
     {
@@ -39,8 +48,16 @@
       "notes_en_file": "/release/notes-en.md",
       "announcements_file": "/release/announcements.json",
       "artifacts": [
-        "Arena-oraja.jar",
-        "ir/bms_ir_arena_oraja_RELEASE.jar"
+        {
+          "path": "Arena-oraja.jar",
+          "asset_name": "macos-arm64-Arena-oraja.jar",
+          "retain_on_pages": false
+        },
+        {
+          "path": "ir/bms_ir_arena_oraja_RELEASE.jar",
+          "asset_name": "macos-arm64-bms_ir_arena_oraja_RELEASE.jar",
+          "retain_on_pages": false
+        }
       ]
     }
   ]

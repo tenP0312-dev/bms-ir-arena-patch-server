@@ -10,7 +10,7 @@ import stat
 import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Mapping
 
 from cryptography.hazmat.primitives import serialization
 
@@ -24,6 +24,16 @@ from .cli import (
 )
 from .delta import create_publication_delta
 from .manifest import ManifestError, load_private_key, load_public_key
+from .locations import (
+    ARTIFACT_LOCATIONS_NAME,
+    ARTIFACT_LOCATIONS_REFERENCE,
+    append_artifact_locations,
+    release_asset_url,
+    sign_artifact_locations,
+    verify_artifact_locations,
+    verify_location_source,
+)
+from .manifest import sign_history, verify_history
 
 
 SAFE_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
@@ -76,6 +86,16 @@ def _read_spec(path: Path) -> dict[str, Any]:
     if any(ord(character) < 32 for character in signing_key_ref):
         raise ManifestError("signing_key_ref is invalid")
 
+    artifact_repository = spec.get("artifact_repository")
+    if artifact_repository is not None:
+        # Validate the repository using the same strict URL constructor used
+        # for every generated location.
+        release_asset_url(
+            str(artifact_repository),
+            str(spec["release_tag"]),
+            "validation-placeholder",
+        )
+
     platforms = spec.get("platforms")
     if not isinstance(platforms, list) or not platforms:
         raise ManifestError("platforms must be a non-empty array")
@@ -87,12 +107,31 @@ def _read_spec(path: Path) -> dict[str, Any]:
             raise ManifestError(f"invalid or duplicate platform: {name}")
         seen.add(name)
         artifacts = platform.get("artifacts")
-        if not isinstance(artifacts, list) or not artifacts or any(
-            not isinstance(item, str) or not item.strip() for item in artifacts
-        ):
+        if not isinstance(artifacts, list) or not artifacts:
             raise ManifestError(
-                f"platforms[{index}].artifacts must be a non-empty string array"
+                f"platforms[{index}].artifacts must be a non-empty array"
             )
+        for artifact_index, item in enumerate(artifacts):
+            if isinstance(item, str) and item.strip():
+                continue
+            if not isinstance(item, dict) or set(item) - {
+                "path",
+                "asset_name",
+                "retain_on_pages",
+            }:
+                raise ManifestError(
+                    f"platforms[{index}].artifacts[{artifact_index}] is invalid"
+                )
+            _text(item.get("path"), "artifact.path")
+            _safe_name(item.get("asset_name"), "artifact.asset_name")
+            if "retain_on_pages" in item and not isinstance(
+                item["retain_on_pages"], bool
+            ):
+                raise ManifestError("artifact.retain_on_pages must be boolean")
+            if artifact_repository is None:
+                raise ManifestError(
+                    "artifact_repository is required for external artifact entries"
+                )
         _text(platform.get("source"), f"platforms[{index}].source")
         localized = (platform.get("notes_ja_file"), platform.get("notes_en_file"))
         if bool(localized[0]) != bool(localized[1]):
@@ -130,7 +169,33 @@ def _read_spec(path: Path) -> dict[str, Any]:
         server_gate["plugin_required"], bool
     ):
         raise ManifestError("server_gate.plugin_required must be boolean")
+    asset_names: set[str] = {
+        str(spec["delta_asset_name"]).casefold(),
+        str(spec["snapshot_asset_name"]).casefold(),
+    }
+    for platform in platforms:
+        for item in platform["artifacts"]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item["asset_name"])
+            if name.casefold() in asset_names:
+                raise ManifestError(f"duplicate release asset name: {name}")
+            asset_names.add(name.casefold())
     return spec
+
+
+def _artifact_items(platform: Mapping[str, Any]) -> list[dict[str, object]]:
+    return [
+        {"path": item, "external": False, "retain_on_pages": True}
+        if isinstance(item, str)
+        else {
+            "path": str(item["path"]),
+            "external": True,
+            "asset_name": str(item["asset_name"]),
+            "retain_on_pages": bool(item.get("retain_on_pages", False)),
+        }
+        for item in platform["artifacts"]
+    ]
 
 
 def _key_identity(private_key_path: Path, public_key_path: Path) -> str:
@@ -238,7 +303,7 @@ def _draft_args(
             else None
         ),
         bootstrap_url=bootstrap.get("url") if bootstrap else None,
-        artifact=list(platform["artifacts"]),
+        artifact=[str(item["path"]) for item in _artifact_items(platform)],
         published_at=published_at,
     )
 
@@ -285,9 +350,10 @@ def prepare_release(
         )
         if not source.is_dir():
             raise ManifestError(f"platform source directory is missing: {source}")
-        for artifact in platform["artifacts"]:
-            if not (source / artifact).is_file():
-                raise ManifestError(f"platform artifact is missing: {source / artifact}")
+        for artifact in _artifact_items(platform):
+            path = source / str(artifact["path"])
+            if not path.is_file():
+                raise ManifestError(f"platform artifact is missing: {path}")
 
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(
@@ -304,6 +370,8 @@ def prepare_release(
         published_at = str(spec.get("published_at") or timestamp())
         prepared_platforms: list[dict[str, object]] = []
         current_pointers: list[Path] = []
+        external_release_uploads: list[dict[str, object]] = []
+        external_assets_directory = staging / "release-assets"
         for platform in spec["platforms"]:
             command_draft(
                 _draft_args(
@@ -327,25 +395,115 @@ def prepare_release(
             current_pointers.append(pointer)
             manifest = read_manifest(pointer)
             source = _resolve(spec_dir, platform["source"], "source")
+            artifact_items = _artifact_items(platform)
+            external_items = [item for item in artifact_items if item["external"]]
+            if external_items:
+                locations_path = (
+                    publication
+                    / "channels"
+                    / spec["channel"]
+                    / platform["platform"]
+                    / ARTIFACT_LOCATIONS_NAME
+                )
+                existing_locations: list[dict[str, object]] = []
+                if locations_path.exists():
+                    value = read_manifest(locations_path)
+                    verify_artifact_locations(
+                        value, load_private_key(private_key_path).public_key()
+                    )
+                    existing_locations = value["locations"]
+                manifest_by_path = {
+                    str(item["path"]): item for item in manifest["artifacts"]
+                }
+                additions: list[dict[str, object]] = []
+                for item in external_items:
+                    path = str(item["path"])
+                    artifact = manifest_by_path[path]
+                    asset_name = str(item["asset_name"])
+                    asset_path = external_assets_directory / asset_name
+                    external_assets_directory.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source / path, asset_path)
+                    url = release_asset_url(
+                        str(spec["artifact_repository"]),
+                        str(spec["release_tag"]),
+                        asset_name,
+                    )
+                    addition = {
+                        "version": str(spec["version"]),
+                        "path": path,
+                        "sha256": artifact["sha256"],
+                        "size": artifact["size"],
+                        "url": url,
+                        "retain_on_pages": bool(item["retain_on_pages"]),
+                    }
+                    verify_location_source(addition, asset_path)
+                    additions.append(addition)
+                    external_release_uploads.append(
+                        {
+                            "role": "external_artifact",
+                            "asset_name": asset_name,
+                            **_file_identity(
+                                asset_path,
+                                display_path=f"release-assets/{asset_name}",
+                            ),
+                        }
+                    )
+                locations = append_artifact_locations(
+                    existing_locations,
+                    additions,
+                    channel=spec["channel"],
+                    platform=platform["platform"],
+                )
+                write_json_atomic(
+                    locations_path,
+                    sign_artifact_locations(
+                        locations, load_private_key(private_key_path)
+                    ),
+                )
+                history_path = locations_path.parent / "history.json"
+                history = read_manifest(history_path)
+                verify_history(
+                    history, load_private_key(private_key_path).public_key()
+                )
+                history["artifact_locations"] = ARTIFACT_LOCATIONS_REFERENCE
+                write_json_atomic(
+                    history_path,
+                    sign_history(history, load_private_key(private_key_path)),
+                )
+                for item in external_items:
+                    if not bool(item["retain_on_pages"]):
+                        (
+                            publication
+                            / "channels"
+                            / spec["channel"]
+                            / platform["platform"]
+                            / "releases"
+                            / spec["version"]
+                            / str(item["path"])
+                        ).unlink()
             prepared_platforms.append(
                 {
                     "platform": platform["platform"],
                     "manifest": str(pointer.relative_to(publication)),
                     "artifacts": manifest["artifacts"],
                     "local_artifacts": [
-                        _file_identity(source / str(artifact))
-                        for artifact in platform["artifacts"]
+                        _file_identity(source / str(artifact["path"]))
+                        for artifact in artifact_items
                     ],
                 }
             )
 
-        audit_publication(publication, _pointer_paths(publication), public_key_path)
+        audit_publication(
+            publication,
+            _pointer_paths(publication),
+            public_key_path,
+        )
         delta_path = staging / str(spec["delta_asset_name"])
         create_publication_delta(
             publication, current_pointers, public_key_path, delta_path
         )
 
-        release_uploads: list[dict[str, object]] = [
+        release_uploads: list[dict[str, object]] = external_release_uploads + [
             {
                 "role": "signed_delta",
                 **_file_identity(delta_path, display_path=delta_path.name),
@@ -372,7 +530,11 @@ def prepare_release(
             "server_gate": spec["server_gate"],
             "platforms": prepared_platforms,
             "upload_policy": (
-                "delta_plus_explicit_standalone"
+                "delta_external_and_explicit_standalone"
+                if external_release_uploads and spec.get("standalone_release_assets")
+                else "delta_plus_external_artifacts"
+                if external_release_uploads
+                else "delta_plus_explicit_standalone"
                 if spec.get("standalone_release_assets")
                 else "delta_only"
             ),
