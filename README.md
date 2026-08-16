@@ -326,6 +326,15 @@ bmsir-arena-patch audit \
   --verify-remote
 ```
 
+For a multi-gigabyte migration, upload the already audited compact snapshot to
+the migration prerelease and dispatch `Upload external migration assets`.
+The workflow downloads the trusted pre-migration complete snapshot inside
+GitHub, recreates every flat asset from the independently signed location
+index, verifies existing partial uploads byte-for-byte, uploads only missing
+assets, and runs the full remote audit. It never receives the private signing
+key. Use the pre-migration release tag/complete-snapshot name and the migration
+release tag/compact-snapshot name as its four inputs.
+
 Archive that exact audited `publication/` directory as the new complete
 snapshot and use `Deploy complete signed test-channel snapshot (seed or
 rollback)` once. Retain the pre-migration complete snapshot and its current

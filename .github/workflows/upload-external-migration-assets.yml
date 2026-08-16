@@ -1,0 +1,164 @@
+name: Upload external migration assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_release_tag:
+        description: Release tag containing the trusted full pre-migration snapshot
+        required: true
+        type: string
+      base_asset_name:
+        description: Full snapshot asset name (without .partNNN)
+        required: true
+        type: string
+      migration_release_tag:
+        description: Release tag containing the signed compact snapshot
+        required: true
+        type: string
+      migration_asset_name:
+        description: Signed compact snapshot asset name (without .partNNN)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: external-migration-${{ inputs.migration_release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+
+      - name: Download trusted full and compact snapshots
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_RELEASE_TAG: ${{ inputs.base_release_tag }}
+          BASE_ASSET_NAME: ${{ inputs.base_asset_name }}
+          MIGRATION_RELEASE_TAG: ${{ inputs.migration_release_tag }}
+          MIGRATION_ASSET_NAME: ${{ inputs.migration_asset_name }}
+        run: |
+          mkdir -p full-download compact-download assembled
+          gh release download "$BASE_RELEASE_TAG" \
+            --pattern "$BASE_ASSET_NAME*" \
+            --dir full-download
+          gh release download "$MIGRATION_RELEASE_TAG" \
+            --pattern "$MIGRATION_ASSET_NAME*" \
+            --dir compact-download
+          bmsir-arena-patch assemble-archive \
+            --parts-directory full-download \
+            --asset-name "$BASE_ASSET_NAME" \
+            --output assembled/full.tar.gz
+          bmsir-arena-patch assemble-archive \
+            --parts-directory compact-download \
+            --asset-name "$MIGRATION_ASSET_NAME" \
+            --output assembled/compact.tar.gz
+
+      - name: Extract snapshots safely
+        env:
+          TEST_PUBLIC_KEY: ${{ vars.ARENA_TEST_RELEASE_PUBLIC_KEY }}
+        run: |
+          test -n "$TEST_PUBLIC_KEY"
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import shutil
+          import tarfile
+
+          for archive_name, destination_name in (
+              ("assembled/full.tar.gz", "full"),
+              ("assembled/compact.tar.gz", "compact"),
+          ):
+              destination = Path(destination_name)
+              destination.mkdir()
+              with tarfile.open(archive_name, "r:gz") as source:
+                  source.extractall(destination, filter="data")
+              for metadata in destination.rglob("._*"):
+                  if metadata.is_symlink() or not metadata.is_file():
+                      raise SystemExit(f"invalid AppleDouble metadata path: {metadata}")
+                  metadata.unlink()
+
+          Path("test-public-key.txt").write_text(
+              os.environ["TEST_PUBLIC_KEY"].strip() + "\n",
+              encoding="ascii",
+          )
+          for scratch in ("full-download", "compact-download", "assembled"):
+              shutil.rmtree(scratch)
+          PY
+
+      - name: Recreate and audit exact signed external assets
+        env:
+          MIGRATION_RELEASE_TAG: ${{ inputs.migration_release_tag }}
+        run: |
+          bmsir-arena-patch stage-external-assets \
+            --full-root full \
+            --compact-root compact \
+            --public-key test-public-key.txt \
+            --repository "$GITHUB_REPOSITORY" \
+            --release-tag "$MIGRATION_RELEASE_TAG" \
+            --output-dir release-assets
+          python - <<'PY'
+          import shutil
+
+          shutil.rmtree("full")
+          PY
+
+      - name: Verify existing assets and list missing uploads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MIGRATION_RELEASE_TAG: ${{ inputs.migration_release_tag }}
+        run: |
+          gh release view "$MIGRATION_RELEASE_TAG" --json assets > existing-assets.json
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+
+          existing = {
+              item["name"]: item
+              for item in json.loads(Path("existing-assets.json").read_text())["assets"]
+          }
+          missing = []
+          for path in sorted(Path("release-assets").iterdir()):
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              remote = existing.get(path.name)
+              if remote is None:
+                  missing.append(str(path))
+                  continue
+              if (
+                  remote["size"] != path.stat().st_size
+                  or remote.get("digest") != f"sha256:{digest}"
+              ):
+                  raise SystemExit(f"existing migration asset mismatch: {path.name}")
+          Path("missing-assets.txt").write_text(
+              "".join(f"{value}\n" for value in missing), encoding="utf-8"
+          )
+          print(f"verified {len(existing)} existing assets; {len(missing)} uploads missing")
+          PY
+
+      - name: Upload missing external assets
+        if: ${{ hashFiles('missing-assets.txt') != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MIGRATION_RELEASE_TAG: ${{ inputs.migration_release_tag }}
+        run: |
+          if test -s missing-assets.txt; then
+            xargs -P 8 -I '{}' gh release upload "$MIGRATION_RELEASE_TAG" '{}' \
+              --repo "$GITHUB_REPOSITORY" < missing-assets.txt
+          fi
+
+      - name: Verify remote signed assets
+        run: |
+          bmsir-arena-patch audit \
+            --root compact \
+            --manifest compact/channels/test/windows-x64/manifest.json \
+            --manifest compact/channels/test/macos-arm64/manifest.json \
+            --public-key test-public-key.txt \
+            --verify-remote

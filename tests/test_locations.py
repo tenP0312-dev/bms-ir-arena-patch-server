@@ -22,7 +22,7 @@ from arena_patch_server.locations import (
     verify_remote_location,
 )
 from arena_patch_server.manifest import ManifestError
-from arena_patch_server.migration import externalize_publication
+from arena_patch_server.migration import externalize_publication, stage_external_assets
 
 
 class ArtifactLocationsTest(unittest.TestCase):
@@ -215,6 +215,29 @@ class ArtifactLocationsTest(unittest.TestCase):
             ).is_file()
         )
         self.assertGreater(state["unique_payloads"], 0)
+
+        staged = self.root / "staged-assets"
+        count, total_bytes = stage_external_assets(
+            full_root=publication,
+            compact_root=output / "publication",
+            public_key_path=self.public_path,
+            repository="tenP0312-dev/bms-ir-arena-patch-server",
+            release_tag="test-external-artifacts-1",
+            output_dir=staged,
+        )
+        original_assets = sorted((output / "release-assets").iterdir())
+        staged_assets = sorted(staged.iterdir())
+        self.assertEqual(
+            [path.name for path in original_assets],
+            [path.name for path in staged_assets],
+        )
+        self.assertEqual(count, len(original_assets))
+        self.assertEqual(
+            total_bytes,
+            sum(path.stat().st_size for path in original_assets),
+        )
+        for original, recreated in zip(original_assets, staged_assets, strict=True):
+            self.assertEqual(original.read_bytes(), recreated.read_bytes())
 
 
 if __name__ == "__main__":
