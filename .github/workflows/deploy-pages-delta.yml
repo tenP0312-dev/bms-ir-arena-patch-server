@@ -118,15 +118,17 @@ jobs:
           bmsir-arena-patch apply-delta \
             --root site \
             --delta-root delta \
-            --public-key test-public-key.txt
+            --public-key test-public-key.txt \
+            --verify-remote
           bmsir-arena-patch audit \
             --root site \
             --manifest site/channels/test/windows-x64/manifest.json \
             --manifest site/channels/test/macos-arm64/manifest.json \
             --public-key test-public-key.txt
 
-      # Make the verified delta live before archiving the complete tree. The
-      # recurring multi-gigabyte Release upload must not delay client updates.
+      # Make the verified delta live before archiving the complete tree. After
+      # the external-artifact migration this tree contains signed metadata and
+      # only explicitly retained launcher compatibility files.
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

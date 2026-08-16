@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import shutil
 import tarfile
 import tempfile
 import unittest
@@ -10,7 +11,8 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from arena_patch_server.cli import command_draft, promote
+from arena_patch_server.cli import audit_publication, command_draft, promote
+from arena_patch_server.delta import apply_publication_delta
 from arena_patch_server.manifest import ManifestError
 from arena_patch_server.release import prepare_release
 
@@ -91,7 +93,7 @@ class TransactionalReleaseTest(unittest.TestCase):
         )
         promote(self.base, manifest, self.public_path)
 
-    def _write_spec(self, *, standalone: bool = False) -> Path:
+    def _write_spec(self, *, standalone: bool = False, external: bool = False) -> Path:
         platforms = []
         for platform in ("windows-x64", "macos-arm64"):
             source = self.root / f"new-{platform}"
@@ -101,7 +103,17 @@ class TransactionalReleaseTest(unittest.TestCase):
                 {
                     "platform": platform,
                     "source": str(source),
-                    "artifacts": ["Arena.jar"],
+                    "artifacts": (
+                        [
+                            {
+                                "path": "Arena.jar",
+                                "asset_name": f"{platform}-Arena.jar",
+                                "retain_on_pages": False,
+                            }
+                        ]
+                        if external
+                        else ["Arena.jar"]
+                    ),
                 }
             )
         extra = self.root / "standalone.zip"
@@ -126,6 +138,10 @@ class TransactionalReleaseTest(unittest.TestCase):
             },
             "platforms": platforms,
         }
+        if external:
+            spec["artifact_repository"] = (
+                "tenP0312-dev/bms-ir-arena-patch-server"
+            )
         if standalone:
             spec["standalone_release_assets"] = [str(extra)]
         path = self.root / ("spec-standalone.json" if standalone else "spec.json")
@@ -195,6 +211,54 @@ class TransactionalReleaseTest(unittest.TestCase):
         self.assertEqual(
             ["signed_delta", "standalone_opt_in"],
             [item["role"] for item in state["release_uploads"]],
+        )
+
+    def test_external_artifacts_are_staged_and_removed_from_pages_delta(self) -> None:
+        output = self.root / "prepared-external"
+        state_path = prepare_release(
+            spec_path=self._write_spec(external=True),
+            base_archive=self.archive,
+            private_key_path=self.private_path,
+            public_key_path=self.public_path,
+            output_dir=output,
+        )
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("delta_plus_external_artifacts", state["upload_policy"])
+        self.assertEqual(
+            ["external_artifact", "external_artifact", "signed_delta"],
+            [item["role"] for item in state["release_uploads"]],
+        )
+        self.assertTrue(
+            (output / "release-assets/windows-x64-Arena.jar").is_file()
+        )
+        self.assertFalse(
+            (
+                output
+                / "publication/channels/test/windows-x64/releases/1.0.1/Arena.jar"
+            ).exists()
+        )
+        with tarfile.open(output / "delta-1.0.1.tar.gz", "r:gz") as archive:
+            names = {name.removeprefix("./") for name in archive.getnames()}
+        self.assertIn(
+            "channels/test/windows-x64/artifact-locations.json", names
+        )
+        self.assertNotIn(
+            "channels/test/windows-x64/releases/1.0.1/Arena.jar", names
+        )
+        applied = self.root / "applied-external"
+        shutil.copytree(self.base, applied)
+        delta = self.root / "extracted-external-delta"
+        delta.mkdir()
+        with tarfile.open(output / "delta-1.0.1.tar.gz", "r:gz") as archive:
+            archive.extractall(delta, filter="data")
+        self.assertEqual(
+            ["test macos-arm64 1.0.1", "test windows-x64 1.0.1"],
+            sorted(apply_publication_delta(applied, delta, self.public_path)),
+        )
+        audit_publication(
+            applied,
+            sorted(applied.glob("channels/test/*/manifest.json")),
+            self.public_path,
         )
 
     def test_base_audit_failure_leaves_no_partial_output(self) -> None:

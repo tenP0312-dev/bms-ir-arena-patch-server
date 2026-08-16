@@ -429,6 +429,11 @@ def validate_history(history: dict[str, Any], *, require_signature: bool = True)
             or not VERSION_RE.fullmatch(launcher_version)
         ):
             raise ManifestError("latest_launcher is invalid")
+    artifact_locations = history.get("artifact_locations")
+    if artifact_locations is not None and artifact_locations != {
+        "path": "artifact-locations.json"
+    }:
+        raise ManifestError("artifact_locations reference is invalid")
     if require_signature and not str(history.get("signature") or ""):
         raise ManifestError("signature is required")
 

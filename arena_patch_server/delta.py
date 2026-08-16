@@ -12,11 +12,19 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .manifest import (
     ManifestError,
+    file_artifact,
     load_public_key,
     safe_artifact_path,
-    verify_artifacts,
     verify_history,
     verify_manifest,
+)
+from .locations import (
+    ARTIFACT_LOCATIONS_NAME,
+    ARTIFACT_LOCATIONS_REFERENCE,
+    location_for_artifact,
+    location_key,
+    verify_artifact_locations,
+    verify_remote_location,
 )
 
 
@@ -50,7 +58,9 @@ def _platform_paths(
     root: Path,
     pointer_relative: PurePosixPath,
     public_key: Ed25519PublicKey,
-) -> tuple[dict[str, Any], dict[str, Any], set[str]]:
+    *,
+    verify_remote: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None, set[str]]:
     pointer = root.joinpath(*pointer_relative.parts)
     if pointer.is_symlink() or not pointer.is_file():
         raise ManifestError("channel pointer is missing or unsafe")
@@ -78,18 +88,54 @@ def _platform_paths(
     if not any(str(entry.get("version")) == version for entry in history["versions"]):
         raise ManifestError("history index is missing the delta version")
 
-    verify_artifacts(root, manifest)
     expected = {
         pointer_relative.as_posix(),
         versioned_relative.as_posix(),
         history_relative.as_posix(),
     }
+    locations_relative = base / ARTIFACT_LOCATIONS_NAME
+    locations_path = root.joinpath(*locations_relative.parts)
+    locations: dict[str, Any] | None = None
+    if locations_path.exists() or locations_path.is_symlink():
+        if locations_path.is_symlink() or not locations_path.is_file():
+            raise ManifestError("artifact-location index is missing or unsafe")
+        locations = _read_object(locations_path)
+        verify_artifact_locations(locations, public_key)
+        if (
+            locations.get("channel") != manifest["channel"]
+            or locations.get("platform") != manifest["platform"]
+        ):
+            raise ManifestError("artifact-location channel/platform mismatch")
+    if (locations is None) != (history.get("artifact_locations") is None):
+        raise ManifestError(
+            "signed history and artifact-location index presence do not match"
+        )
+    if locations is not None:
+        if history.get("artifact_locations") != ARTIFACT_LOCATIONS_REFERENCE:
+            raise ManifestError("artifact_locations reference is invalid")
+        expected.add(locations_relative.as_posix())
+
     release_base = base / "releases" / version
     for artifact in manifest["artifacts"]:
-        expected.add(
-            (release_base / safe_artifact_path(str(artifact["path"]))).as_posix()
-        )
-    return manifest, history, expected
+        relative = (
+            release_base / safe_artifact_path(str(artifact["path"]))
+        ).as_posix()
+        local = root.joinpath(*PurePosixPath(relative).parts)
+        location = location_for_artifact(locations, version, artifact)
+        retained = location is None or bool(location["retain_on_pages"])
+        if retained:
+            expected.add(relative)
+            actual = file_artifact(local.parent, local.name)
+            if (
+                actual["sha256"] != artifact["sha256"]
+                or actual["size"] != artifact["size"]
+            ):
+                raise ManifestError(f"artifact mismatch: {artifact['path']}")
+        elif local.exists() or local.is_symlink():
+            raise ManifestError(f"external artifact must not be in delta: {relative}")
+        if verify_remote and location is not None:
+            verify_remote_location(location)
+    return manifest, history, locations, expected
 
 
 def create_publication_delta(
@@ -118,7 +164,9 @@ def create_publication_delta(
             relative = PurePosixPath(manifest_path.resolve().relative_to(root.resolve()).as_posix())
         except ValueError as exc:
             raise ManifestError("delta manifest must be inside the publication root") from exc
-        manifest, _history, platform_expected = _platform_paths(root, relative, public_key)
+        manifest, _history, _locations, platform_expected = _platform_paths(
+            root, relative, public_key
+        )
         identity = (str(manifest["channel"]), str(manifest["platform"]))
         if identity in platforms:
             raise ManifestError(f"duplicate delta platform: {identity[0]}/{identity[1]}")
@@ -154,7 +202,13 @@ def _copy_atomic(source: Path, destination: Path) -> None:
         raise
 
 
-def apply_publication_delta(root: Path, delta_root: Path, public_key_path: Path) -> list[str]:
+def apply_publication_delta(
+    root: Path,
+    delta_root: Path,
+    public_key_path: Path,
+    *,
+    verify_remote: bool = False,
+) -> list[str]:
     """Validate and add a strict one-version delta to an existing publication."""
     if not root.is_dir() or not delta_root.is_dir():
         raise ManifestError("base publication and delta roots must exist")
@@ -176,8 +230,11 @@ def apply_publication_delta(root: Path, delta_root: Path, public_key_path: Path)
     applied: list[str] = []
     identities: set[tuple[str, str]] = set()
     for pointer_relative in pointer_relatives:
-        manifest, history, platform_expected = _platform_paths(
-            delta_root, pointer_relative, public_key
+        manifest, history, locations, platform_expected = _platform_paths(
+            delta_root,
+            pointer_relative,
+            public_key,
+            verify_remote=verify_remote,
         )
         expected.update(platform_expected)
         channel = str(manifest["channel"])
@@ -208,6 +265,34 @@ def apply_publication_delta(root: Path, delta_root: Path, public_key_path: Path)
         if str(base_manifest["version"]).casefold() == version.casefold():
             raise ManifestError("delta version must differ from the base pointer")
 
+        base_locations_path = root.joinpath(*(base / ARTIFACT_LOCATIONS_NAME).parts)
+        base_locations: dict[str, Any] | None = None
+        if base_locations_path.exists() or base_locations_path.is_symlink():
+            if base_locations_path.is_symlink() or not base_locations_path.is_file():
+                raise ManifestError("base artifact-location index is unsafe")
+            base_locations = _read_object(base_locations_path)
+            verify_artifact_locations(base_locations, public_key)
+        if base_locations is not None and locations is None:
+            raise ManifestError("delta cannot remove the artifact-location index")
+        if locations is not None:
+            new_by_key = {
+                location_key(entry["version"], entry["path"]): entry
+                for entry in locations["locations"]
+            }
+            for entry in (base_locations or {}).get("locations", []):
+                if new_by_key.get(location_key(entry["version"], entry["path"])) != entry:
+                    raise ManifestError("delta rewrites an immutable artifact location")
+            for entry in locations["locations"]:
+                key = location_key(entry["version"], entry["path"])
+                if base_locations is None or not any(
+                    location_key(old["version"], old["path"]) == key
+                    for old in base_locations["locations"]
+                ):
+                    if str(entry["version"]).casefold() != version.casefold():
+                        raise ManifestError(
+                            "delta artifact locations may only add the current version"
+                        )
+
         old_versions = base_history["versions"]
         new_versions = history["versions"]
         expected_entry = {
@@ -220,19 +305,28 @@ def apply_publication_delta(root: Path, delta_root: Path, public_key_path: Path)
         versioned_relative = base / "manifests" / f"{version}.json"
         release_base = base / "releases" / version
         new_immutable = [versioned_relative.as_posix()]
-        new_immutable.extend(
-            (release_base / safe_artifact_path(str(artifact["path"]))).as_posix()
-            for artifact in manifest["artifacts"]
-        )
+        for artifact in manifest["artifacts"]:
+            location = location_for_artifact(locations, version, artifact)
+            if location is None or bool(location["retain_on_pages"]):
+                new_immutable.append(
+                    (
+                        release_base
+                        / safe_artifact_path(str(artifact["path"]))
+                    ).as_posix()
+                )
         for relative in new_immutable:
             destination = root.joinpath(*PurePosixPath(relative).parts)
             if destination.exists() or destination.is_symlink():
                 raise ManifestError(f"delta would overwrite an immutable path: {relative}")
         immutable.extend(new_immutable)
-        mutable.extend([
-            (base / "history.json").as_posix(),
-            base_pointer_relative.as_posix(),
-        ])
+        mutable.extend(
+            [
+                (base / "history.json").as_posix(),
+                base_pointer_relative.as_posix(),
+            ]
+        )
+        if locations is not None:
+            mutable.append((base / ARTIFACT_LOCATIONS_NAME).as_posix())
         applied.append(f"{channel} {platform} {version}")
 
     actual_directories = {
