@@ -15,8 +15,11 @@ from .locations import (
     ARTIFACT_LOCATIONS_REFERENCE,
     build_artifact_locations,
     file_identity,
+    release_asset_name,
     release_asset_url,
     sign_artifact_locations,
+    verify_artifact_locations,
+    verify_location_source,
 )
 from .manifest import (
     ManifestError,
@@ -287,6 +290,126 @@ def externalize_publication(
         write_json_atomic(staging / "migration-state.json", state)
         os.replace(staging, output_dir)
         return output_dir / "migration-state.json"
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+def stage_external_assets(
+    *,
+    full_root: Path,
+    compact_root: Path,
+    public_key_path: Path,
+    repository: str,
+    release_tag: str,
+    output_dir: Path,
+) -> tuple[int, int]:
+    """Recreate signed migration assets from a trusted full snapshot.
+
+    This is intentionally verification-only: the signed compact publication
+    already fixes every URL and artifact identity, so no private key is needed
+    on the GitHub runner that performs the large byte transfer.
+    """
+    full_root = full_root.resolve()
+    compact_root = compact_root.resolve()
+    public_key_path = public_key_path.resolve()
+    output_dir = output_dir.resolve()
+    if output_dir.exists():
+        raise ManifestError(f"output directory already exists: {output_dir}")
+    for protected_root in (full_root, compact_root):
+        try:
+            output_dir.relative_to(protected_root)
+        except ValueError:
+            continue
+        raise ManifestError("staged assets must be outside the publication roots")
+
+    full_pointers = _pointer_paths(full_root)
+    compact_pointers = _pointer_paths(compact_root)
+    if not full_pointers or not compact_pointers:
+        raise ManifestError("migration publications contain no channel pointers")
+    full_relative = {
+        path.relative_to(full_root).as_posix() for path in full_pointers
+    }
+    compact_relative = {
+        path.relative_to(compact_root).as_posix() for path in compact_pointers
+    }
+    if full_relative != compact_relative:
+        raise ManifestError("full and compact publication targets differ")
+    audit_publication(full_root, full_pointers, public_key_path)
+
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{output_dir.name}-", dir=output_dir.parent)
+    )
+    try:
+        public_key = load_public_key(public_key_path)
+        identities: dict[str, tuple[str, int]] = {}
+        total_bytes = 0
+        for compact_pointer in compact_pointers:
+            relative = compact_pointer.relative_to(compact_root)
+            compact_manifest = read_manifest(compact_pointer)
+            verify_manifest(compact_manifest, public_key)
+            full_manifest = read_manifest(full_root / relative)
+            verify_manifest(full_manifest, public_key)
+            if compact_manifest != full_manifest:
+                raise ManifestError("full and compact current manifests differ")
+
+            channel = str(compact_manifest["channel"])
+            platform = str(compact_manifest["platform"])
+            compact_base = compact_root / "channels" / channel / platform
+            full_base = full_root / "channels" / channel / platform
+            compact_history = read_manifest(compact_base / "history.json")
+            full_history = read_manifest(full_base / "history.json")
+            verify_history(compact_history, public_key)
+            verify_history(full_history, public_key)
+            compact_unsigned = dict(compact_history)
+            full_unsigned = dict(full_history)
+            compact_unsigned.pop("signature", None)
+            compact_unsigned.pop("artifact_locations", None)
+            full_unsigned.pop("signature", None)
+            full_unsigned.pop("artifact_locations", None)
+            if compact_unsigned != full_unsigned:
+                raise ManifestError("full and compact signed histories differ")
+
+            locations_path = compact_base / ARTIFACT_LOCATIONS_NAME
+            locations = read_manifest(locations_path)
+            verify_artifact_locations(locations, public_key)
+            for location in locations["locations"]:
+                asset_name = release_asset_name(str(location["url"]))
+                if str(location["url"]) != release_asset_url(
+                    repository, release_tag, asset_name
+                ):
+                    raise ManifestError(
+                        "artifact location does not target the requested migration release"
+                    )
+                identity = (str(location["sha256"]), int(location["size"]))
+                previous = identities.get(asset_name)
+                if previous is not None:
+                    if previous != identity:
+                        raise ManifestError(
+                            f"release asset name has conflicting identities: {asset_name}"
+                        )
+                    continue
+                source_relative = _artifact_relative(
+                    channel,
+                    platform,
+                    str(location["version"]),
+                    str(location["path"]),
+                )
+                source = full_root.joinpath(*source_relative.parts)
+                verify_location_source(location, source)
+                _copy(source, staging / asset_name)
+                identities[asset_name] = identity
+                total_bytes += identity[1]
+
+        audit_publication(
+            compact_root,
+            compact_pointers,
+            public_key_path,
+            external_assets_directory=staging,
+        )
+        os.replace(staging, output_dir)
+        return len(identities), total_bytes
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise

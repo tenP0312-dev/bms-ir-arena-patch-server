@@ -536,6 +536,20 @@ def command_externalize_publication(args: argparse.Namespace) -> None:
     )
 
 
+def command_stage_external_assets(args: argparse.Namespace) -> None:
+    from .migration import stage_external_assets
+
+    count, total_bytes = stage_external_assets(
+        full_root=args.full_root,
+        compact_root=args.compact_root,
+        public_key_path=args.public_key,
+        repository=args.repository,
+        release_tag=args.release_tag,
+        output_dir=args.output_dir,
+    )
+    print(f"STAGED {count} assets {total_bytes} bytes")
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="bmsir-arena-patch")
     commands = result.add_subparsers(dest="command", required=True)
@@ -676,6 +690,18 @@ def parser() -> argparse.ArgumentParser:
     externalize.add_argument("--output-dir", type=Path, required=True)
     externalize.add_argument("--retain-file", action="append", default=[])
     externalize.set_defaults(run=command_externalize_publication)
+
+    stage_external = commands.add_parser(
+        "stage-external-assets",
+        help="recreate signed migration assets from a trusted full snapshot",
+    )
+    stage_external.add_argument("--full-root", type=Path, required=True)
+    stage_external.add_argument("--compact-root", type=Path, required=True)
+    stage_external.add_argument("--public-key", type=Path, required=True)
+    stage_external.add_argument("--repository", required=True)
+    stage_external.add_argument("--release-tag", required=True)
+    stage_external.add_argument("--output-dir", type=Path, required=True)
+    stage_external.set_defaults(run=command_stage_external_assets)
     return result
 
 
