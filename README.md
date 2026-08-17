@@ -43,9 +43,10 @@ The manifest is canonical JSON signed with Ed25519. `artifacts` is the sparse
 delta for the current version. An optional `bootstrap` contains an HTTPS ZIP
 URL, ZIP size and SHA-256, and the full installation inventory used only when
 the launcher is in an empty directory. Every artifact path, SHA-256, size,
-channel, platform, mandatory flag, minimum launcher version, optional latest
-`launcher_version`, revocation list, Japanese/English release notes, and
-announcement list is covered by the signature. When `launcher_version` is
+channel, platform, mandatory and plugin-mandatory flags, minimum launcher
+version, optional latest `launcher_version`, revocation list, Japanese/English
+release notes, and announcement list is covered by the signature. When
+`launcher_version` is
 present, the same sparse release must carry the matching Windows launcher EXE
 or macOS launcher executable so a body-current installation can still receive
 the launcher independently. Artifact paths are relative and release
@@ -155,6 +156,16 @@ mandatory decision is cached by the launcher and remains enforced if a later
 network check fails. Arena service compatibility remains the final gate for a
 client that has never received the mandatory manifest or whose local files
 were manually altered.
+
+Use `--plugin-mandatory` for a plugin-only requirement. The signed release
+must contain exactly one direct `ir/bms_ir*.jar` artifact and must set
+`--minimum-launcher-version` to `0.2.27` or newer. The launcher compares the
+installed plugin bytes with that signed artifact, caches the verified policy,
+and blocks launch until they match without presenting the release as a body
+update. Prepared release specs use the equivalent top-level
+`"plugin_mandatory": true` field and also require
+`server_gate.plugin_required=true`. Publishing or removing this policy remains
+a separately authorized mandatory-channel operation.
 
 For local testing:
 

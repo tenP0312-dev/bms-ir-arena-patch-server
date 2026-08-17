@@ -23,7 +23,12 @@ from .cli import (
     write_json_atomic,
 )
 from .delta import create_publication_delta
-from .manifest import ManifestError, load_private_key, load_public_key
+from .manifest import (
+    ManifestError,
+    is_bmsir_plugin_artifact,
+    load_private_key,
+    load_public_key,
+)
 from .locations import (
     ARTIFACT_LOCATIONS_NAME,
     ARTIFACT_LOCATIONS_REFERENCE,
@@ -75,6 +80,8 @@ def _read_spec(path: Path) -> dict[str, Any]:
         raise ManifestError("unsupported release spec schema")
     if spec.get("channel") != "test":
         raise ManifestError("prepare-release currently supports only the test channel")
+    if "plugin_mandatory" in spec and not isinstance(spec["plugin_mandatory"], bool):
+        raise ManifestError("plugin_mandatory must be boolean")
     _safe_name(spec.get("version"), "version")
     _safe_name(spec.get("release_tag"), "release_tag")
     base = _object(spec.get("base"), "base")
@@ -169,6 +176,26 @@ def _read_spec(path: Path) -> dict[str, Any]:
         server_gate["plugin_required"], bool
     ):
         raise ManifestError("server_gate.plugin_required must be boolean")
+    if spec.get("plugin_mandatory") and not server_gate.get("plugin_required"):
+        raise ManifestError(
+            "plugin_mandatory requires server_gate.plugin_required=true"
+        )
+    if spec.get("plugin_mandatory"):
+        for index, platform in enumerate(platforms):
+            plugin_paths = [
+                str(item if isinstance(item, str) else item.get("path") or "")
+                for item in platform["artifacts"]
+            ]
+            plugins = [
+                path
+                for path in plugin_paths
+                if is_bmsir_plugin_artifact(path)
+            ]
+            if len(plugins) != 1:
+                raise ManifestError(
+                    f"platforms[{index}] must contain exactly one direct BMS-IR "
+                    "plugin artifact when plugin_mandatory is enabled"
+                )
     asset_names: set[str] = {
         str(spec["delta_asset_name"]).casefold(),
         str(spec["snapshot_asset_name"]).casefold(),
@@ -289,6 +316,7 @@ def _draft_args(
         notes_en_file=_optional_path(platform, "notes_en_file", spec_dir),
         announcements_file=_optional_path(platform, "announcements_file", spec_dir),
         mandatory=bool(spec.get("mandatory", False)),
+        plugin_mandatory=bool(spec.get("plugin_mandatory", False)),
         minimum_launcher_version=str(spec.get("minimum_launcher_version", "0.1.0")),
         launcher_version=spec.get("launcher_version"),
         revoke=[str(value) for value in spec.get("revoked_versions", [])],

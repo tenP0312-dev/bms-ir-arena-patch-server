@@ -29,6 +29,7 @@ MAX_RELEASE_NOTES_BYTES = 64 * 1024
 MAX_ANNOUNCEMENTS = 20
 MAX_ANNOUNCEMENT_TITLE = 200
 MAX_BOOTSTRAP_BYTES = 2 * 1024 * 1024 * 1024
+PLUGIN_MANDATORY_MINIMUM_LAUNCHER_VERSION = "0.2.27"
 
 
 class ManifestError(ValueError):
@@ -84,6 +85,16 @@ def safe_artifact_path(value: object) -> str:
     ):
         raise ManifestError(f"unsafe artifact path: {text}")
     return text
+
+
+def is_bmsir_plugin_artifact(value: object) -> bool:
+    path = PurePosixPath(str(value or ""))
+    return (
+        len(path.parts) == 2
+        and path.parts[0].casefold() == "ir"
+        and path.name.casefold().startswith("bms_ir")
+        and path.suffix.casefold() == ".jar"
+    )
 
 
 def file_artifact(root: Path, relative: str) -> dict[str, object]:
@@ -176,6 +187,7 @@ def build_manifest(
     release_notes_markdown_en: str | None = None,
     announcements: Iterable[Mapping[str, object]] = (),
     mandatory: bool = False,
+    plugin_mandatory: bool = False,
     minimum_launcher_version: str = "0.1.0",
     launcher_version: str | None = None,
     revoked_versions: Iterable[str] = (),
@@ -200,6 +212,7 @@ def build_manifest(
         ),
         "announcements": normalized_announcements(announcements),
         "mandatory": bool(mandatory),
+        "plugin_mandatory": bool(plugin_mandatory),
         "minimum_launcher_version": str(minimum_launcher_version).strip(),
         "revoked_versions": sorted({str(value).strip() for value in revoked_versions if str(value).strip()}),
         "bootstrap": dict(bootstrap) if bootstrap is not None else None,
@@ -342,10 +355,35 @@ def validate_manifest(manifest: dict[str, Any], *, require_signature: bool = Tru
         raise ManifestError("published_at is required")
     if not isinstance(manifest.get("mandatory"), bool):
         raise ManifestError("mandatory must be boolean")
+    plugin_mandatory = manifest.get("plugin_mandatory", False)
+    if not isinstance(plugin_mandatory, bool):
+        raise ManifestError("plugin_mandatory must be boolean")
     if not isinstance(manifest.get("revoked_versions"), list):
         raise ManifestError("revoked_versions must be an array")
     validate_localized_content(manifest)
     artifacts = validate_artifact_list(manifest.get("artifacts"), label="artifacts")
+    if plugin_mandatory:
+        plugins = [
+            artifact
+            for artifact in artifacts
+            if is_bmsir_plugin_artifact(artifact.get("path"))
+        ]
+        if len(plugins) != 1:
+            raise ManifestError(
+                "plugin_mandatory requires exactly one direct BMS-IR plugin artifact"
+            )
+        minimum_launcher = manifest.get("minimum_launcher_version")
+        if (
+            not isinstance(minimum_launcher, str)
+            or not VERSION_RE.fullmatch(minimum_launcher)
+            or version_key(minimum_launcher) < version_key(
+                PLUGIN_MANDATORY_MINIMUM_LAUNCHER_VERSION
+            )
+        ):
+            raise ManifestError(
+                "plugin_mandatory requires minimum_launcher_version "
+                f"{PLUGIN_MANDATORY_MINIMUM_LAUNCHER_VERSION} or newer"
+            )
     if "launcher_version" in manifest:
         launcher_version = manifest.get("launcher_version")
         if not isinstance(launcher_version, str) or not VERSION_RE.fullmatch(launcher_version):
