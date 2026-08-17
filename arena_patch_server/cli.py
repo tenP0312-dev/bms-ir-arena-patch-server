@@ -145,6 +145,7 @@ def command_draft(args: argparse.Namespace) -> None:
         release_notes_markdown_en=notes_en,
         announcements=announcements,
         mandatory=args.mandatory,
+        plugin_mandatory=getattr(args, "plugin_mandatory", False),
         minimum_launcher_version=args.minimum_launcher_version,
         launcher_version=getattr(args, "launcher_version", None),
         revoked_versions=args.revoke,
@@ -603,6 +604,11 @@ def parser() -> argparse.ArgumentParser:
         help="latest launcher version carried by the signed platform artifacts",
     )
     draft.add_argument("--mandatory", action="store_true")
+    draft.add_argument(
+        "--plugin-mandatory",
+        action="store_true",
+        help="block launch until the signed BMS-IR plugin artifact is installed",
+    )
     draft.add_argument("--revoke", action="append", default=[])
     draft.add_argument("--bootstrap-manifest", type=Path)
     draft.add_argument("--bootstrap-archive", type=Path)

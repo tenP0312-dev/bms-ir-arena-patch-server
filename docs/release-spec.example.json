@@ -11,6 +11,7 @@
   },
   "delta_asset_name": "bmsir-arena-test-channel-0.4.14.48-delta.tar.gz",
   "snapshot_asset_name": "bmsir-arena-test-channel-0.4.14.48-complete.tar.gz",
+  "plugin_mandatory": false,
   "source_commits": {
     "oraja": "0123456789abcdef0123456789abcdef01234567",
     "plugin": "123456789abcdef0123456789abcdef012345678",

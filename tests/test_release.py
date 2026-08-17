@@ -93,27 +93,39 @@ class TransactionalReleaseTest(unittest.TestCase):
         )
         promote(self.base, manifest, self.public_path)
 
-    def _write_spec(self, *, standalone: bool = False, external: bool = False) -> Path:
+    def _write_spec(
+        self,
+        *,
+        standalone: bool = False,
+        external: bool = False,
+        plugin_mandatory: bool = False,
+    ) -> Path:
         platforms = []
         for platform in ("windows-x64", "macos-arm64"):
             source = self.root / f"new-{platform}"
             source.mkdir(exist_ok=True)
             (source / "Arena.jar").write_bytes(f"new-{platform}".encode())
+            if plugin_mandatory:
+                (source / "ir").mkdir(exist_ok=True)
+                (source / "ir/bms_ir_arena_0.0.73.jar").write_bytes(
+                    f"plugin-{platform}".encode()
+                )
+            artifacts: list[object] = [
+                {
+                    "path": "Arena.jar",
+                    "asset_name": f"{platform}-Arena.jar",
+                    "retain_on_pages": False,
+                }
+                if external
+                else "Arena.jar"
+            ]
+            if plugin_mandatory:
+                artifacts.append("ir/bms_ir_arena_0.0.73.jar")
             platforms.append(
                 {
                     "platform": platform,
                     "source": str(source),
-                    "artifacts": (
-                        [
-                            {
-                                "path": "Arena.jar",
-                                "asset_name": f"{platform}-Arena.jar",
-                                "retain_on_pages": False,
-                            }
-                        ]
-                        if external
-                        else ["Arena.jar"]
-                    ),
+                    "artifacts": artifacts,
                 }
             )
         extra = self.root / "standalone.zip"
@@ -135,9 +147,13 @@ class TransactionalReleaseTest(unittest.TestCase):
             "server_gate": {
                 "client_version": "1.0.1",
                 "build_hash": "abcdef12",
+                "plugin_required": plugin_mandatory,
             },
             "platforms": platforms,
         }
+        if plugin_mandatory:
+            spec["plugin_mandatory"] = True
+            spec["minimum_launcher_version"] = "0.2.27"
         if external:
             spec["artifact_repository"] = (
                 "tenP0312-dev/bms-ir-arena-patch-server"
@@ -173,6 +189,27 @@ class TransactionalReleaseTest(unittest.TestCase):
                 / "publication/channels/test/windows-x64/releases/1.0.0/Arena.jar"
             ).is_file()
         )
+
+    def test_prepares_signed_plugin_mandatory_manifests(self) -> None:
+        output = self.root / "prepared-plugin-mandatory"
+        prepare_release(
+            spec_path=self._write_spec(plugin_mandatory=True),
+            base_archive=self.archive,
+            private_key_path=self.private_path,
+            public_key_path=self.public_path,
+            output_dir=output,
+        )
+        for platform in ("windows-x64", "macos-arm64"):
+            manifest = json.loads(
+                (
+                    output
+                    / "publication/channels/test"
+                    / platform
+                    / "manifests/1.0.1.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertTrue(manifest["plugin_mandatory"])
+            self.assertEqual("0.2.27", manifest["minimum_launcher_version"])
 
     def test_rejects_wrong_private_key_before_creating_output(self) -> None:
         wrong = Ed25519PrivateKey.generate()

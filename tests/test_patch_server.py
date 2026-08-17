@@ -123,6 +123,57 @@ class PatchServerTest(unittest.TestCase):
         with self.assertRaisesRegex(ManifestError, "signature"):
             verify_manifest(tampered, self.public)
 
+    def test_plugin_mandatory_is_signed_and_requires_one_plugin_artifact(self) -> None:
+        source = self.root / "plugin-source"
+        (source / "ir").mkdir(parents=True)
+        (source / "ir/bms_ir_arena_0.0.73.jar").write_bytes(b"required-plugin")
+        manifest = build_manifest(
+            source,
+            ["ir/bms_ir_arena_0.0.73.jar"],
+            channel="test",
+            platform="windows-x64",
+            version="0.4.14.54",
+            published_at="2026-08-18T00:00:00Z",
+            plugin_mandatory=True,
+            minimum_launcher_version="0.2.27",
+        )
+        signed = sign_manifest(manifest, self.private)
+        verify_manifest(signed, self.public)
+        self.assertTrue(signed["plugin_mandatory"])
+
+        tampered = dict(signed)
+        tampered["plugin_mandatory"] = False
+        with self.assertRaisesRegex(ManifestError, "signature"):
+            verify_manifest(tampered, self.public)
+
+        with self.assertRaisesRegex(ManifestError, "exactly one"):
+            build_manifest(
+                source,
+                [],
+                channel="test",
+                platform="windows-x64",
+                version="0.4.14.54",
+                published_at="2026-08-18T00:00:00Z",
+                plugin_mandatory=True,
+                minimum_launcher_version="0.2.27",
+            )
+
+    def test_plugin_mandatory_requires_capable_launcher(self) -> None:
+        source = self.root / "old-launcher-plugin-source"
+        (source / "ir").mkdir(parents=True)
+        (source / "ir/bms_ir_arena_0.0.73.jar").write_bytes(b"required-plugin")
+        with self.assertRaisesRegex(ManifestError, "0.2.27 or newer"):
+            build_manifest(
+                source,
+                ["ir/bms_ir_arena_0.0.73.jar"],
+                channel="test",
+                platform="windows-x64",
+                version="0.4.14.54",
+                published_at="2026-08-18T00:00:00Z",
+                plugin_mandatory=True,
+                minimum_launcher_version="0.2.26",
+            )
+
     def test_legacy_release_notes_remain_valid(self) -> None:
         legacy = dict(self.signed)
         legacy.pop("release_notes_markdown_ja")
