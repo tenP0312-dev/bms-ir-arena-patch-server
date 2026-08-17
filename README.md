@@ -285,6 +285,51 @@ Both workflows accept either one archive asset or contiguous `.part000`,
 `.part001`, ... assets when given the unsuffixed archive name. Mixed, missing,
 malformed, empty, or inconsistently sized parts fail closed.
 
+### Retention-only legacy compatibility repair
+
+If a deployed legacy launcher still needs the Pages-relative URL for an
+artifact that was already indexed as external-only, do not rewrite or replace
+the release. A bounded retention-only repair may add the exact signed bytes as
+a Pages mirror and change only that location's signed `retain_on_pages` value
+from `false` to `true`. The version, path, URL, SHA-256, size, current pointer,
+history, and current/versioned manifests remain byte-for-byte unchanged.
+
+Work on a copy of the last workflow-generated complete snapshot. Retain each
+required artifact, audit the complete updated copy, and create the strict
+delta by comparing it with the untouched base:
+
+```sh
+bmsir-arena-patch retain-on-pages \
+  --root updated-snapshot \
+  --private-key /protected/arena-test-current.key \
+  --public-key /protected/arena-test-current.pub \
+  --channel test \
+  --platform windows-x64 \
+  --version 0.4.14.50 \
+  --artifact Arena-oraja.jar \
+  --source reviewed-windows/Arena-oraja.jar
+
+bmsir-arena-patch audit \
+  --root updated-snapshot \
+  --manifest updated-snapshot/channels/test/windows-x64/manifest.json \
+  --manifest updated-snapshot/channels/test/macos-arm64/manifest.json \
+  --public-key /protected/arena-test-current.pub
+
+bmsir-arena-patch create-retention-delta \
+  --base-root untouched-snapshot \
+  --updated-root updated-snapshot \
+  --public-key /protected/arena-test-current.pub \
+  --output bmsir-arena-test-channel-retention-repair.tar.gz
+```
+
+Upload the checked delta to a dedicated prerelease and dispatch `Deploy signed
+test-channel delta` with the last successful complete snapshot as its base.
+The normal workflow auto-detects the retention-only shape, rejects additions,
+removals, `true` to `false` transitions, identity/URL rewrites, and unrelated
+file changes, then stores a new complete snapshot for the next normal release.
+Use this only to repair a demonstrated legacy-launcher bridge; setting
+`retain_on_pages: true` in the original release spec remains preferable.
+
 ### One-time launcher-first compact migration
 
 Publish and verify launcher 0.2.26 or newer through the legacy string-artifact
