@@ -28,6 +28,11 @@ repository. Read the tests around any behavior being changed.
 - Use the signed delta archive and `Deploy signed test-channel delta` workflow
   for normal internal test-channel releases. The workflow-generated complete
   snapshot on each successful Release is the base for the next delta.
+- A retention-only delta is a corrective compatibility operation, not the
+  normal release path. It may only add an exact already-signed external
+  artifact to Pages and change its signed `retain_on_pages` value from `false`
+  to `true`; it must not change the channel pointer, history, manifest,
+  artifact identity, or external URL.
 - Use `Deploy complete signed test-channel snapshot (seed or rollback)` only
   for the first trusted seed or an explicit rollback. Do not make recurring
   operator uploads of the complete append-only publication tree.

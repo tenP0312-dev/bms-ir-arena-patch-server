@@ -13,12 +13,21 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from arena_patch_server.cli import audit_publication, write_json_atomic
 from arena_patch_server.delta import apply_publication_delta, create_publication_delta
+from arena_patch_server.locations import (
+    ARTIFACT_LOCATIONS_REFERENCE,
+    build_artifact_locations,
+    sign_artifact_locations,
+)
 from arena_patch_server.manifest import (
     ManifestError,
     append_history_version,
     build_manifest,
     sign_history,
     sign_manifest,
+)
+from arena_patch_server.retention import (
+    create_retention_delta,
+    retain_artifact_on_pages,
 )
 
 
@@ -139,6 +148,59 @@ class PublicationDeltaTest(unittest.TestCase):
         self.delta.mkdir()
         with tarfile.open(self.archive, "r:gz") as archive:
             archive.extractall(self.delta, filter="data")
+
+    def _externalize_current_body(self, root: Path, platform: str) -> Path:
+        base = root / "channels" / "test" / platform
+        manifest = json.loads((base / "manifest.json").read_text(encoding="utf-8"))
+        artifact = manifest["artifacts"][0]
+        source = self.workspace / f"external-{root.name}-{platform}.jar"
+        release_path = base / "releases" / manifest["version"] / artifact["path"]
+        shutil.copy2(release_path, source)
+        location = {
+            "version": manifest["version"],
+            "path": artifact["path"],
+            "sha256": artifact["sha256"],
+            "size": artifact["size"],
+            "url": (
+                "https://github.com/example/arena/releases/download/"
+                f"test-{manifest['version']}/Arena.jar"
+            ),
+            "retain_on_pages": False,
+        }
+        locations = sign_artifact_locations(
+            build_artifact_locations([location], channel="test", platform=platform),
+            self.private,
+        )
+        write_json_atomic(base / "artifact-locations.json", locations)
+        history = json.loads((base / "history.json").read_text(encoding="utf-8"))
+        history["artifact_locations"] = ARTIFACT_LOCATIONS_REFERENCE
+        write_json_atomic(base / "history.json", sign_history(history, self.private))
+        release_path.unlink()
+        return source
+
+    def _retention_delta(self) -> tuple[Path, Path, Path]:
+        base = self.workspace / "retention-base"
+        updated = self.workspace / "retention-updated"
+        shutil.copytree(self.target, base)
+        source = self._externalize_current_body(base, "windows-x64")
+        shutil.copytree(base, updated)
+        retain_artifact_on_pages(
+            updated,
+            self.workspace / "test.key",
+            self.public_key,
+            channel="test",
+            platform="windows-x64",
+            version="1.0.1",
+            artifact_path="Arena.jar",
+            source=source,
+        )
+        archive = self.workspace / "retention.tar.gz"
+        create_retention_delta(base, updated, self.public_key, archive)
+        delta = self.workspace / "retention-delta"
+        delta.mkdir()
+        with tarfile.open(archive, "r:gz") as source_archive:
+            source_archive.extractall(delta, filter="data")
+        return base, updated, delta
 
     def test_packages_only_current_release_and_applies_it(self) -> None:
         self._extract_delta()
@@ -295,6 +357,133 @@ class PublicationDeltaTest(unittest.TestCase):
                 [self.windows_pointer],
                 self.public_key,
                 self.target / "delta.tar.gz",
+            )
+
+    def test_applies_monotonic_pages_retention_without_changing_release(self) -> None:
+        private_raw = self.private.private_bytes(
+            serialization.Encoding.Raw,
+            serialization.PrivateFormat.Raw,
+            serialization.NoEncryption(),
+        )
+        (self.workspace / "test.key").write_text(
+            base64.b64encode(private_raw).decode("ascii"), encoding="ascii"
+        )
+        base, _updated, delta = self._retention_delta()
+
+        self.assertEqual(
+            {
+                "channels/test/windows-x64/artifact-locations.json",
+                "channels/test/windows-x64/releases/1.0.1/Arena.jar",
+            },
+            {
+                path.relative_to(delta).as_posix()
+                for path in delta.rglob("*")
+                if path.is_file()
+            },
+        )
+        self.assertEqual(
+            ["test windows-x64 1.0.1/Arena.jar"],
+            apply_publication_delta(base, delta, self.public_key),
+        )
+        self.assertEqual(
+            ["test windows-x64 1.0.1"],
+            audit_publication(
+                base,
+                [base / "channels/test/windows-x64/manifest.json"],
+                self.public_key,
+            ),
+        )
+        self.assertEqual(
+            "1.0.1",
+            json.loads(
+                (base / "channels/test/windows-x64/manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )["version"],
+        )
+
+    def test_retention_delta_rejects_metadata_rewrite_and_removal(self) -> None:
+        private_raw = self.private.private_bytes(
+            serialization.Encoding.Raw,
+            serialization.PrivateFormat.Raw,
+            serialization.NoEncryption(),
+        )
+        (self.workspace / "test.key").write_text(
+            base64.b64encode(private_raw).decode("ascii"), encoding="ascii"
+        )
+        base, _updated, delta = self._retention_delta()
+        locations_path = delta / "channels/test/windows-x64/artifact-locations.json"
+        locations = json.loads(locations_path.read_text(encoding="utf-8"))
+        locations["locations"][0]["url"] = (
+            "https://github.com/example/arena/releases/download/test-1.0.1/other.jar"
+        )
+        write_json_atomic(
+            locations_path, sign_artifact_locations(locations, self.private)
+        )
+        with self.assertRaisesRegex(ManifestError, "only change retain_on_pages"):
+            apply_publication_delta(base, delta, self.public_key)
+
+        base_locations_path = base / "channels/test/windows-x64/artifact-locations.json"
+        base_locations = json.loads(base_locations_path.read_text(encoding="utf-8"))
+        base_locations["locations"][0]["retain_on_pages"] = True
+        write_json_atomic(
+            base_locations_path,
+            sign_artifact_locations(base_locations, self.private),
+        )
+        original_delta_locations = json.loads(
+            locations_path.read_text(encoding="utf-8")
+        )
+        original_delta_locations["locations"][0]["url"] = base_locations["locations"][0]["url"]
+        original_delta_locations["locations"][0]["retain_on_pages"] = False
+        write_json_atomic(
+            locations_path,
+            sign_artifact_locations(original_delta_locations, self.private),
+        )
+        with self.assertRaisesRegex(ManifestError, "cannot remove or rewrite"):
+            apply_publication_delta(base, delta, self.public_key)
+
+        extra_locations = json.loads(
+            locations_path.read_text(encoding="utf-8")
+        )
+        extra_locations["locations"].append(
+            {
+                "version": "1.0.0",
+                "path": "extra.jar",
+                "sha256": "0" * 64,
+                "size": 1,
+                "url": (
+                    "https://github.com/example/arena/releases/download/"
+                    "test-1.0.0/extra.jar"
+                ),
+                "retain_on_pages": True,
+            }
+        )
+        write_json_atomic(
+            locations_path,
+            sign_artifact_locations(extra_locations, self.private),
+        )
+        with self.assertRaisesRegex(ManifestError, "cannot add or remove"):
+            apply_publication_delta(base, delta, self.public_key)
+
+    def test_create_retention_delta_rejects_unrelated_publication_change(self) -> None:
+        private_raw = self.private.private_bytes(
+            serialization.Encoding.Raw,
+            serialization.PrivateFormat.Raw,
+            serialization.NoEncryption(),
+        )
+        (self.workspace / "test.key").write_text(
+            base64.b64encode(private_raw).decode("ascii"), encoding="ascii"
+        )
+        base, updated, _delta = self._retention_delta()
+        history_path = updated / "channels/test/windows-x64/history.json"
+        history_path.write_text(history_path.read_text(encoding="utf-8") + " ", encoding="utf-8")
+
+        with self.assertRaisesRegex(ManifestError, "unrelated file"):
+            create_retention_delta(
+                base,
+                updated,
+                self.public_key,
+                self.workspace / "invalid-retention.tar.gz",
             )
 
 

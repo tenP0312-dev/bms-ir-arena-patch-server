@@ -209,7 +209,7 @@ def apply_publication_delta(
     *,
     verify_remote: bool = False,
 ) -> list[str]:
-    """Validate and add a strict one-version delta to an existing publication."""
+    """Validate and add a strict release or retention delta."""
     if not root.is_dir() or not delta_root.is_dir():
         raise ManifestError("base publication and delta roots must exist")
     public_key = load_public_key(public_key_path)
@@ -222,7 +222,14 @@ def apply_publication_delta(
         and PurePosixPath(relative).name == "manifest.json"
     )
     if not pointer_relatives:
-        raise ManifestError("delta does not contain a channel pointer")
+        from .retention import apply_retention_delta
+
+        return apply_retention_delta(
+            root,
+            delta_root,
+            public_key_path,
+            verify_remote=verify_remote,
+        )
 
     expected: set[str] = set()
     immutable: list[str] = []

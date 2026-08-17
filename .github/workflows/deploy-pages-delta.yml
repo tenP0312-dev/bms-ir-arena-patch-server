@@ -113,7 +113,7 @@ jobs:
             --manifest site/channels/test/macos-arm64/manifest.json \
             --public-key test-public-key.txt
 
-      - name: Apply and audit strict delta
+      - name: Apply and audit strict release or retention delta
         run: |
           bmsir-arena-patch apply-delta \
             --root site \
@@ -128,7 +128,8 @@ jobs:
 
       # Make the verified delta live before archiving the complete tree. After
       # the external-artifact migration this tree contains signed metadata and
-      # only explicitly retained launcher compatibility files.
+      # only explicitly retained compatibility files. A retention-only repair
+      # may add exact body/plugin mirrors without changing the channel pointer.
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .archive import ArchivePartsError, assemble_release_archive
 from .delta import apply_publication_delta, create_publication_delta
+from .retention import create_retention_delta, retain_artifact_on_pages
 from .manifest import (
     ManifestError,
     append_history_version,
@@ -504,6 +505,32 @@ def command_apply_delta(args: argparse.Namespace) -> None:
     print("DELTA OK " + "; ".join(applied))
 
 
+def command_retain_on_pages(args: argparse.Namespace) -> None:
+    print(
+        retain_artifact_on_pages(
+            args.root,
+            args.private_key,
+            args.public_key,
+            channel=args.channel,
+            platform=args.platform,
+            version=args.version,
+            artifact_path=args.artifact,
+            source=args.source,
+        )
+    )
+
+
+def command_create_retention_delta(args: argparse.Namespace) -> None:
+    print(
+        create_retention_delta(
+            args.base_root,
+            args.updated_root,
+            args.public_key,
+            args.output,
+        )
+    )
+
+
 def command_prepare_release(args: argparse.Namespace) -> None:
     # Imported lazily so the transactional helper can reuse the stable
     # draft/promote/audit primitives in this module without an import cycle.
@@ -655,6 +682,32 @@ def parser() -> argparse.ArgumentParser:
     create_delta.add_argument("--public-key", type=Path, required=True)
     create_delta.add_argument("--output", type=Path, required=True)
     create_delta.set_defaults(run=command_create_delta)
+
+    retain_on_pages = commands.add_parser(
+        "retain-on-pages",
+        help="add an exact signed external artifact as a legacy Pages mirror",
+    )
+    retain_on_pages.add_argument("--root", type=Path, required=True)
+    retain_on_pages.add_argument("--private-key", type=Path, required=True)
+    retain_on_pages.add_argument("--public-key", type=Path, required=True)
+    retain_on_pages.add_argument("--channel", choices=("stable", "test"), required=True)
+    retain_on_pages.add_argument(
+        "--platform", choices=("windows-x64", "macos-arm64"), required=True
+    )
+    retain_on_pages.add_argument("--version", required=True)
+    retain_on_pages.add_argument("--artifact", required=True)
+    retain_on_pages.add_argument("--source", type=Path, required=True)
+    retain_on_pages.set_defaults(run=command_retain_on_pages)
+
+    create_retention = commands.add_parser(
+        "create-retention-delta",
+        help="package only monotonic false-to-true Pages retention changes",
+    )
+    create_retention.add_argument("--base-root", type=Path, required=True)
+    create_retention.add_argument("--updated-root", type=Path, required=True)
+    create_retention.add_argument("--public-key", type=Path, required=True)
+    create_retention.add_argument("--output", type=Path, required=True)
+    create_retention.set_defaults(run=command_create_retention_delta)
 
     apply_delta = commands.add_parser("apply-delta")
     apply_delta.add_argument("--root", type=Path, required=True)
