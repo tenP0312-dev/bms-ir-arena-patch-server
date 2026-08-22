@@ -59,6 +59,15 @@ artifacts. The launcher writes its version marker only after a complete,
 verified transaction, and restores replaced program files if installation
 fails.
 
+Windows releases that carry `Arena-oraja.jar` are also repair baselines, not
+body-only deltas. Their signed artifact list must include both native-audio
+DLLs plus the reviewed source, license, build-manifest, and SPDX inventory.
+The launcher hashes existing files and downloads only missing or changed
+entries, so repeating this baseline does not re-download a valid installation.
+It does repair an installation that skipped the release where a runtime file
+was first introduced. Launcher-only and plugin-only releases do not need the
+body runtime baseline.
+
 ## Operator flow
 
 Before promoting a channel pointer that adds or replaces a BMS-IR-built body

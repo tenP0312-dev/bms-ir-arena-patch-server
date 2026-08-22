@@ -14,7 +14,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from arena_patch_server.cli import audit_publication, command_draft, promote
 from arena_patch_server.delta import apply_publication_delta
 from arena_patch_server.manifest import ManifestError
-from arena_patch_server.release import prepare_release
+from arena_patch_server.release import (
+    WINDOWS_NATIVE_AUDIO_BASELINE,
+    prepare_release,
+)
 
 
 class TransactionalReleaseTest(unittest.TestCase):
@@ -210,6 +213,82 @@ class TransactionalReleaseTest(unittest.TestCase):
             )
             self.assertTrue(manifest["plugin_mandatory"])
             self.assertEqual("0.2.27", manifest["minimum_launcher_version"])
+
+    def test_rejects_windows_body_without_native_audio_repair_baseline(self) -> None:
+        spec_path = self._write_spec()
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        windows = spec["platforms"][0]
+        source = Path(windows["source"])
+        (source / "Arena.jar").rename(source / "Arena-oraja.jar")
+        windows["artifacts"] = ["Arena-oraja.jar"]
+        spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            ManifestError,
+            "native-audio repair baseline",
+        ):
+            prepare_release(
+                spec_path=spec_path,
+                base_archive=self.archive,
+                private_key_path=self.private_path,
+                public_key_path=self.public_path,
+                output_dir=self.root / "must-remain-absent-native",
+            )
+
+    def test_accepts_complete_windows_native_audio_repair_baseline(self) -> None:
+        spec_path = self._write_spec()
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        windows = spec["platforms"][0]
+        source = Path(windows["source"])
+        (source / "Arena.jar").rename(source / "Arena-oraja.jar")
+        for relative in sorted(WINDOWS_NATIVE_AUDIO_BASELINE):
+            path = source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(relative.encode("utf-8"))
+        windows["artifacts"] = [
+            "Arena-oraja.jar",
+            *sorted(WINDOWS_NATIVE_AUDIO_BASELINE),
+        ]
+        spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+        output = self.root / "prepared-native"
+        prepare_release(
+            spec_path=spec_path,
+            base_archive=self.archive,
+            private_key_path=self.private_path,
+            public_key_path=self.public_path,
+            output_dir=output,
+        )
+        manifest = json.loads(
+            (
+                output
+                / "publication/channels/test/windows-x64/manifests/1.0.1.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertTrue(
+            WINDOWS_NATIVE_AUDIO_BASELINE.issubset(
+                {item["path"] for item in manifest["artifacts"]}
+            )
+        )
+
+    def test_allows_windows_plugin_only_release_without_native_baseline(self) -> None:
+        spec_path = self._write_spec()
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        windows = spec["platforms"][0]
+        source = Path(windows["source"])
+        plugin = source / "ir/bms_ir_arena_0.0.73.jar"
+        plugin.parent.mkdir(parents=True, exist_ok=True)
+        plugin.write_bytes(b"plugin")
+        windows["artifacts"] = ["ir/bms_ir_arena_0.0.73.jar"]
+        spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+        prepare_release(
+            spec_path=spec_path,
+            base_archive=self.archive,
+            private_key_path=self.private_path,
+            public_key_path=self.public_path,
+            output_dir=self.root / "prepared-plugin-only",
+        )
 
     def test_rejects_wrong_private_key_before_creating_output(self) -> None:
         wrong = Ed25519PrivateKey.generate()
