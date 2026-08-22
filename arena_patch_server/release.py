@@ -43,6 +43,29 @@ from .manifest import sign_history, verify_history
 
 SAFE_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 VALID_PLATFORMS = {"windows-x64", "macos-arm64"}
+WINDOWS_BODY_ARTIFACT = "Arena-oraja.jar"
+WINDOWS_NATIVE_AUDIO_BASELINE = frozenset(
+    {
+        "LICENSE",
+        "THIRD_PARTY_NOTICES.txt",
+        "licenses/JNA-5.13.0-APACHE-2.0.txt",
+        "licenses/PORTAUDIO-19.7.0-MIT.txt",
+        "licenses/STEINBERG-ASIO-SDK-2.3.4-BSD-3-CLAUSE.txt",
+        "licenses/STEINBERG-ASIO-SDK-2.3.4.txt",
+        "native-audio-SOURCE_INFO.md",
+        "native-audio-manifest.json",
+        "native-audio.spdx.json",
+        "natives/jportaudio_x64.dll",
+        "natives/portaudio_x64.dll",
+        "source/native-audio/ASIO-SDK_2.3.4_2025-10-15.zip",
+        "source/native-audio/CMakeLists.txt",
+        "source/native-audio/SOURCE_INFO.md",
+        "source/native-audio/STEINBERG-ASIO-SDK-2.3.4-BSD-3-CLAUSE.txt",
+        "source/native-audio/build-native-audio.ps1",
+        "source/native-audio/inputs.json",
+        "source/native-audio/portaudio-147dd722548358763a8b649b3e4b41dfffbcfbb6.tar.gz",
+    }
+)
 
 
 def _object(value: object, label: str) -> dict[str, Any]:
@@ -138,6 +161,25 @@ def _read_spec(path: Path) -> dict[str, Any]:
             if artifact_repository is None:
                 raise ManifestError(
                     "artifact_repository is required for external artifact entries"
+                )
+        artifact_paths = {
+            str(item if isinstance(item, str) else item.get("path") or "")
+            for item in artifacts
+        }
+        artifact_paths_casefolded = {path.casefold() for path in artifact_paths}
+        if (
+            name == "windows-x64"
+            and WINDOWS_BODY_ARTIFACT.casefold() in artifact_paths_casefolded
+        ):
+            missing = sorted(
+                path
+                for path in WINDOWS_NATIVE_AUDIO_BASELINE
+                if path.casefold() not in artifact_paths_casefolded
+            )
+            if missing:
+                raise ManifestError(
+                    "Windows Arena body releases must carry the complete "
+                    f"native-audio repair baseline; missing: {missing}"
                 )
         _text(platform.get("source"), f"platforms[{index}].source")
         localized = (platform.get("notes_ja_file"), platform.get("notes_en_file"))

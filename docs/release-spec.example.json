@@ -36,6 +36,96 @@
           "retain_on_pages": false
         },
         {
+          "path": "natives/jportaudio_x64.dll",
+          "asset_name": "windows-x64-jportaudio_x64.dll",
+          "retain_on_pages": false
+        },
+        {
+          "path": "natives/portaudio_x64.dll",
+          "asset_name": "windows-x64-portaudio_x64.dll",
+          "retain_on_pages": false
+        },
+        {
+          "path": "native-audio-manifest.json",
+          "asset_name": "windows-x64-native-audio-manifest.json",
+          "retain_on_pages": false
+        },
+        {
+          "path": "native-audio.spdx.json",
+          "asset_name": "windows-x64-native-audio.spdx.json",
+          "retain_on_pages": false
+        },
+        {
+          "path": "native-audio-SOURCE_INFO.md",
+          "asset_name": "windows-x64-native-audio-SOURCE_INFO.md",
+          "retain_on_pages": false
+        },
+        {
+          "path": "LICENSE",
+          "asset_name": "windows-x64-LICENSE.txt",
+          "retain_on_pages": false
+        },
+        {
+          "path": "THIRD_PARTY_NOTICES.txt",
+          "asset_name": "windows-x64-THIRD_PARTY_NOTICES.txt",
+          "retain_on_pages": false
+        },
+        {
+          "path": "licenses/JNA-5.13.0-APACHE-2.0.txt",
+          "asset_name": "windows-x64-JNA-5.13.0-APACHE-2.0.txt",
+          "retain_on_pages": false
+        },
+        {
+          "path": "licenses/PORTAUDIO-19.7.0-MIT.txt",
+          "asset_name": "windows-x64-PORTAUDIO-19.7.0-MIT.txt",
+          "retain_on_pages": false
+        },
+        {
+          "path": "licenses/STEINBERG-ASIO-SDK-2.3.4.txt",
+          "asset_name": "windows-x64-STEINBERG-ASIO-SDK-2.3.4.txt",
+          "retain_on_pages": false
+        },
+        {
+          "path": "licenses/STEINBERG-ASIO-SDK-2.3.4-BSD-3-CLAUSE.txt",
+          "asset_name": "windows-x64-STEINBERG-ASIO-SDK-2.3.4-BSD-3-CLAUSE.txt",
+          "retain_on_pages": false
+        },
+        {
+          "path": "source/native-audio/ASIO-SDK_2.3.4_2025-10-15.zip",
+          "asset_name": "windows-x64-ASIO-SDK_2.3.4_2025-10-15.zip",
+          "retain_on_pages": false
+        },
+        {
+          "path": "source/native-audio/portaudio-147dd722548358763a8b649b3e4b41dfffbcfbb6.tar.gz",
+          "asset_name": "windows-x64-portaudio-147dd722548358763a8b649b3e4b41dfffbcfbb6.tar.gz",
+          "retain_on_pages": false
+        },
+        {
+          "path": "source/native-audio/CMakeLists.txt",
+          "asset_name": "windows-x64-native-audio-CMakeLists.txt",
+          "retain_on_pages": false
+        },
+        {
+          "path": "source/native-audio/SOURCE_INFO.md",
+          "asset_name": "windows-x64-native-audio-source-SOURCE_INFO.md",
+          "retain_on_pages": false
+        },
+        {
+          "path": "source/native-audio/STEINBERG-ASIO-SDK-2.3.4-BSD-3-CLAUSE.txt",
+          "asset_name": "windows-x64-native-audio-source-ASIO-BSD-3-CLAUSE.txt",
+          "retain_on_pages": false
+        },
+        {
+          "path": "source/native-audio/build-native-audio.ps1",
+          "asset_name": "windows-x64-build-native-audio.ps1",
+          "retain_on_pages": false
+        },
+        {
+          "path": "source/native-audio/inputs.json",
+          "asset_name": "windows-x64-native-audio-inputs.json",
+          "retain_on_pages": false
+        },
+        {
           "path": "ir/bms_ir_arena_oraja_RELEASE.jar",
           "asset_name": "windows-x64-bms_ir_arena_oraja_RELEASE.jar",
           "retain_on_pages": false
