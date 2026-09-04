@@ -41,6 +41,7 @@ from .locations import (
     ARTIFACT_LOCATIONS_REFERENCE,
     location_for_artifact,
     location_key,
+    release_asset_coordinates,
     release_asset_name,
     verify_artifact_locations,
     verify_location_source,
@@ -389,7 +390,18 @@ def audit_publication(
                         f"external artifact must not remain on Pages: {relative}"
                     )
                 if external_assets_directory is not None:
-                    source = external_assets_directory / release_asset_name(str(location["url"]))
+                    repository, release_tag, asset_name = release_asset_coordinates(
+                        str(location["url"])
+                    )
+                    source = external_assets_directory.joinpath(
+                        *repository.split("/"), release_tag, asset_name
+                    )
+                    if not source.exists():
+                        # Accept the legacy flat staging directory for older
+                        # single-release preparation output.
+                        source = external_assets_directory / release_asset_name(
+                            str(location["url"])
+                        )
                     verify_location_source(location, source)
                 if verify_remote:
                     remote_identity = (

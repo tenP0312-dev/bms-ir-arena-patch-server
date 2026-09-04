@@ -93,6 +93,36 @@ def _resolve(base: Path, value: object, label: str) -> Path:
     return (base / path).resolve() if not path.is_absolute() else path.resolve()
 
 
+def _artifact_release_target(
+    spec: Mapping[str, Any], item: Mapping[str, Any]
+) -> tuple[str, str]:
+    has_repository = "release_repository" in item
+    has_tag = "release_tag" in item
+    if has_repository != has_tag:
+        raise ManifestError(
+            "artifact.release_repository and artifact.release_tag must be supplied together"
+        )
+    repository = (
+        _text(item.get("release_repository"), "artifact.release_repository")
+        if has_repository
+        else _text(spec.get("artifact_repository"), "artifact_repository")
+    )
+    tag = (
+        _safe_name(item.get("release_tag"), "artifact.release_tag")
+        if has_tag
+        else _safe_name(spec.get("release_tag"), "release_tag")
+    )
+    release_asset_url(repository, tag, "validation-placeholder")
+    return repository, tag
+
+
+def _external_asset_path(
+    root: Path, repository: str, tag: str, asset_name: str
+) -> Path:
+    owner, name = repository.split("/", 1)
+    return root / owner / name / tag / asset_name
+
+
 def _read_spec(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -148,6 +178,8 @@ def _read_spec(path: Path) -> dict[str, Any]:
                 "path",
                 "asset_name",
                 "retain_on_pages",
+                "release_repository",
+                "release_tag",
             }:
                 raise ManifestError(
                     f"platforms[{index}].artifacts[{artifact_index}] is invalid"
@@ -158,10 +190,7 @@ def _read_spec(path: Path) -> dict[str, Any]:
                 item["retain_on_pages"], bool
             ):
                 raise ManifestError("artifact.retain_on_pages must be boolean")
-            if artifact_repository is None:
-                raise ManifestError(
-                    "artifact_repository is required for external artifact entries"
-                )
+            _artifact_release_target(spec, item)
         artifact_paths = {
             str(item if isinstance(item, str) else item.get("path") or "")
             for item in artifacts
@@ -238,33 +267,53 @@ def _read_spec(path: Path) -> dict[str, Any]:
                     f"platforms[{index}] must contain exactly one direct BMS-IR "
                     "plugin artifact when plugin_mandatory is enabled"
                 )
-    asset_names: set[str] = {
-        str(spec["delta_asset_name"]).casefold(),
-        str(spec["snapshot_asset_name"]).casefold(),
-    }
+    release_targets: set[tuple[str, str, str]] = set()
+    if artifact_repository is not None:
+        repository_key = str(artifact_repository).casefold()
+        tag_key = str(spec["release_tag"]).casefold()
+        release_targets.update(
+            {
+                (repository_key, tag_key, str(spec["delta_asset_name"]).casefold()),
+                (repository_key, tag_key, str(spec["snapshot_asset_name"]).casefold()),
+            }
+        )
     for platform in platforms:
         for item in platform["artifacts"]:
             if not isinstance(item, dict):
                 continue
             name = str(item["asset_name"])
-            if name.casefold() in asset_names:
-                raise ManifestError(f"duplicate release asset name: {name}")
-            asset_names.add(name.casefold())
+            repository, tag = _artifact_release_target(spec, item)
+            target = (repository.casefold(), tag.casefold(), name.casefold())
+            if target in release_targets:
+                raise ManifestError(
+                    f"duplicate release asset target: {repository} {tag} {name}"
+                )
+            release_targets.add(target)
     return spec
 
 
-def _artifact_items(platform: Mapping[str, Any]) -> list[dict[str, object]]:
-    return [
-        {"path": item, "external": False, "retain_on_pages": True}
-        if isinstance(item, str)
-        else {
-            "path": str(item["path"]),
-            "external": True,
-            "asset_name": str(item["asset_name"]),
-            "retain_on_pages": bool(item.get("retain_on_pages", False)),
-        }
-        for item in platform["artifacts"]
-    ]
+def _artifact_items(
+    spec: Mapping[str, Any], platform: Mapping[str, Any]
+) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    for item in platform["artifacts"]:
+        if isinstance(item, str):
+            result.append(
+                {"path": item, "external": False, "retain_on_pages": True}
+            )
+            continue
+        repository, tag = _artifact_release_target(spec, item)
+        result.append(
+            {
+                "path": str(item["path"]),
+                "external": True,
+                "asset_name": str(item["asset_name"]),
+                "retain_on_pages": bool(item.get("retain_on_pages", False)),
+                "release_repository": repository,
+                "release_tag": tag,
+            }
+        )
+    return result
 
 
 def _key_identity(private_key_path: Path, public_key_path: Path) -> str:
@@ -373,7 +422,7 @@ def _draft_args(
             else None
         ),
         bootstrap_url=bootstrap.get("url") if bootstrap else None,
-        artifact=[str(item["path"]) for item in _artifact_items(platform)],
+        artifact=[str(item["path"]) for item in _artifact_items(spec, platform)],
         published_at=published_at,
     )
 
@@ -420,7 +469,7 @@ def prepare_release(
         )
         if not source.is_dir():
             raise ManifestError(f"platform source directory is missing: {source}")
-        for artifact in _artifact_items(platform):
+        for artifact in _artifact_items(spec, platform):
             path = source / str(artifact["path"])
             if not path.is_file():
                 raise ManifestError(f"platform artifact is missing: {path}")
@@ -465,7 +514,7 @@ def prepare_release(
             current_pointers.append(pointer)
             manifest = read_manifest(pointer)
             source = _resolve(spec_dir, platform["source"], "source")
-            artifact_items = _artifact_items(platform)
+            artifact_items = _artifact_items(spec, platform)
             external_items = [item for item in artifact_items if item["external"]]
             if external_items:
                 locations_path = (
@@ -490,12 +539,19 @@ def prepare_release(
                     path = str(item["path"])
                     artifact = manifest_by_path[path]
                     asset_name = str(item["asset_name"])
-                    asset_path = external_assets_directory / asset_name
-                    external_assets_directory.mkdir(parents=True, exist_ok=True)
+                    release_repository = str(item["release_repository"])
+                    release_tag = str(item["release_tag"])
+                    asset_path = _external_asset_path(
+                        external_assets_directory,
+                        release_repository,
+                        release_tag,
+                        asset_name,
+                    )
+                    asset_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(source / path, asset_path)
                     url = release_asset_url(
-                        str(spec["artifact_repository"]),
-                        str(spec["release_tag"]),
+                        release_repository,
+                        release_tag,
                         asset_name,
                     )
                     addition = {
@@ -511,10 +567,12 @@ def prepare_release(
                     external_release_uploads.append(
                         {
                             "role": "external_artifact",
+                            "repository": release_repository,
+                            "release_tag": release_tag,
                             "asset_name": asset_name,
                             **_file_identity(
                                 asset_path,
-                                display_path=f"release-assets/{asset_name}",
+                                display_path=asset_path.relative_to(staging).as_posix(),
                             ),
                         }
                     )

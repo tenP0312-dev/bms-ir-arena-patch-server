@@ -207,19 +207,25 @@ bmsir-arena-patch prepare-release \
 
 The command extracts the previous complete or compact snapshot into a new
 temporary tree, audits it, drafts and promotes every specified platform with
-one timestamp, stages external artifacts under `release-assets/`, signs their
-locations, audits the result, creates the signed metadata delta, and only then
-atomically exposes the output directory. It writes `release-state.json` with
-exact GitHub workflow inputs and artifact identities. A failed key check,
+one timestamp, stages external artifacts under
+`release-assets/<owner>/<repository>/<tag>/`, signs their locations, audits
+the result, creates the signed metadata delta, and only then atomically exposes
+the output directory. It writes `release-state.json` with each upload's target
+repository, release tag, path, and artifact identity plus the exact GitHub
+workflow inputs. A failed key check,
 draft, location check, audit, or delta build leaves no reusable partial output.
 
 String entries in `platforms[].artifacts` retain the legacy Pages-relative
-layout. Object entries name a unique flat `asset_name` on the release and an
-explicit `retain_on_pages` compatibility decision. They require the spec's
-`artifact_repository`. After the launcher-first migration, normal releases use
-`false`; `true` is reserved for a deliberately reviewed legacy-launcher bridge
-because retained entries remain part of every later exact Pages snapshot.
-Normal `release_uploads` then contains each external
+layout. Object entries name an `asset_name` on the release and an explicit
+`retain_on_pages` compatibility decision. By default they use the spec's
+`artifact_repository` and `release_tag`. An entry may instead provide both
+`release_repository` and `release_tag`; this is used for the two canonical
+`tenP0312-dev/oraja` OS releases, whose assets are each named exactly
+`Arena-oraja.jar`. Asset names must be unique within one repository/tag target,
+but the same name is valid on distinct targets. After the launcher-first
+migration, normal releases use `false`; `true` is reserved for a deliberately
+reviewed legacy-launcher bridge because retained entries remain part of every
+later exact Pages snapshot. Normal `release_uploads` then contains each external
 artifact followed by the signed delta. Upload every listed path to the checked
 prerelease before dispatching the workflow. Do not add duplicate standalone
 body/plugin assets just for convenience; use `standalone_release_assets` only
@@ -259,8 +265,13 @@ versioned manifest, and only retained compatibility files. External payloads
 remain separate Release assets. The output must be outside `dist/` so it cannot
 contaminate the exact publication tree.
 
-Create the checked pre-release and upload the small delta, then manually
-dispatch `Deploy signed test-channel delta`:
+Create every checked pre-release named by `release-state.json`. The two body
+releases must be created in `tenP0312-dev/oraja` with their OS-specific tags and
+the same reviewed oraja source commit as the target; GitHub's automatic source
+archives then contain the body source instead of this patch-server source.
+Upload each external artifact to its recorded repository/tag, upload the small
+delta to the patch-server release, then manually dispatch
+`Deploy signed test-channel delta`:
 
 ```sh
 gh release create test-0.4.14.36 \
@@ -268,10 +279,13 @@ gh release create test-0.4.14.36 \
   --prerelease \
   --title "Arena internal test 0.4.14.36"
 gh release upload test-0.4.14.36 \
-  prepared/release-assets/* \
   prepared/bmsir-arena-test-channel-0.4.14.36-delta.tar.gz \
   --repo tenP0312-dev/bms-ir-arena-patch-server
 ```
+
+Do not flatten or bulk-upload `release-assets/`: follow the `repository`,
+`release_tag`, and `path` recorded for every `external_artifact` entry. Verify
+the remote hashes before channel promotion.
 
 Use these workflow inputs:
 
