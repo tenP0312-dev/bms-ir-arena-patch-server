@@ -96,6 +96,12 @@ def release_asset_name(url: str) -> str:
     return unquote(urlsplit(url).path.rsplit("/", 1)[-1])
 
 
+def release_asset_coordinates(url: str) -> tuple[str, str, str]:
+    validated = validate_release_asset_url(url)
+    parts = [unquote(part) for part in urlsplit(validated).path.split("/")]
+    return f"{parts[1]}/{parts[2]}", parts[5], parts[6]
+
+
 def location_key(version: object, path: object) -> tuple[str, str]:
     return str(version).strip().casefold(), safe_artifact_path(path).casefold()
 

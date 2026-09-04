@@ -16,6 +16,7 @@ from arena_patch_server.cli import command_draft, promote
 from arena_patch_server.locations import (
     append_artifact_locations,
     location_for_artifact,
+    release_asset_coordinates,
     release_asset_url,
     sign_artifact_locations,
     verify_artifact_locations,
@@ -54,6 +55,21 @@ class ArtifactLocationsTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_release_asset_coordinates_preserve_repository_tag_and_name(self) -> None:
+        url = release_asset_url(
+            "tenP0312-dev/oraja",
+            "test-1.2.3-windows-x86-64",
+            "Arena-oraja.jar",
+        )
+        self.assertEqual(
+            (
+                "tenP0312-dev/oraja",
+                "test-1.2.3-windows-x86-64",
+                "Arena-oraja.jar",
+            ),
+            release_asset_coordinates(url),
+        )
 
     def test_signed_location_binds_manifest_identity_and_rejects_tampering(self) -> None:
         artifact = {

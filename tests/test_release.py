@@ -102,6 +102,7 @@ class TransactionalReleaseTest(unittest.TestCase):
         standalone: bool = False,
         external: bool = False,
         plugin_mandatory: bool = False,
+        platform_releases: bool = False,
     ) -> Path:
         platforms = []
         for platform in ("windows-x64", "macos-arm64"):
@@ -113,15 +114,28 @@ class TransactionalReleaseTest(unittest.TestCase):
                 (source / "ir/bms_ir_arena_0.0.73.jar").write_bytes(
                     f"plugin-{platform}".encode()
                 )
-            artifacts: list[object] = [
-                {
-                    "path": "Arena.jar",
-                    "asset_name": f"{platform}-Arena.jar",
-                    "retain_on_pages": False,
-                }
-                if external
-                else "Arena.jar"
-            ]
+            external_body = {
+                "path": "Arena.jar",
+                "asset_name": (
+                    "Arena-oraja.jar"
+                    if platform_releases
+                    else f"{platform}-Arena.jar"
+                ),
+                "retain_on_pages": False,
+            }
+            if platform_releases:
+                lane = (
+                    "windows-x86-64"
+                    if platform == "windows-x64"
+                    else "macos-aarch64"
+                )
+                external_body.update(
+                    {
+                        "release_repository": "tenP0312-dev/oraja",
+                        "release_tag": f"test-1.0.1-{lane}",
+                    }
+                )
+            artifacts: list[object] = [external_body if external else "Arena.jar"]
             if plugin_mandatory:
                 artifacts.append("ir/bms_ir_arena_0.0.73.jar")
             platforms.append(
@@ -345,7 +359,11 @@ class TransactionalReleaseTest(unittest.TestCase):
             [item["role"] for item in state["release_uploads"]],
         )
         self.assertTrue(
-            (output / "release-assets/windows-x64-Arena.jar").is_file()
+            (
+                output
+                / "release-assets/tenP0312-dev/bms-ir-arena-patch-server"
+                / "test-1.0.1/windows-x64-Arena.jar"
+            ).is_file()
         )
         self.assertFalse(
             (
@@ -376,6 +394,78 @@ class TransactionalReleaseTest(unittest.TestCase):
             sorted(applied.glob("channels/test/*/manifest.json")),
             self.public_path,
         )
+
+    def test_same_body_asset_name_can_target_separate_oraja_platform_releases(self) -> None:
+        output = self.root / "prepared-platform-releases"
+        state_path = prepare_release(
+            spec_path=self._write_spec(external=True, platform_releases=True),
+            base_archive=self.archive,
+            private_key_path=self.private_path,
+            public_key_path=self.public_path,
+            output_dir=output,
+        )
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        external = [
+            item for item in state["release_uploads"]
+            if item["role"] == "external_artifact"
+        ]
+        self.assertEqual(2, len(external))
+        self.assertEqual(
+            {"test-1.0.1-windows-x86-64", "test-1.0.1-macos-aarch64"},
+            {item["release_tag"] for item in external},
+        )
+        self.assertEqual(
+            {"tenP0312-dev/oraja"},
+            {item["repository"] for item in external},
+        )
+        self.assertEqual({"Arena-oraja.jar"}, {item["asset_name"] for item in external})
+        for item in external:
+            self.assertTrue((output / item["path"]).is_file())
+
+        audit_publication(
+            output / "publication",
+            sorted((output / "publication").glob("channels/test/*/manifest.json")),
+            self.public_path,
+            external_assets_directory=output / "release-assets",
+        )
+
+        for platform, lane in (
+            ("windows-x64", "windows-x86-64"),
+            ("macos-arm64", "macos-aarch64"),
+        ):
+            locations = json.loads(
+                (
+                    output
+                    / "publication/channels/test"
+                    / platform
+                    / "artifact-locations.json"
+                ).read_text(encoding="utf-8")
+            )
+            current = next(
+                item for item in locations["locations"]
+                if item["version"] == "1.0.1" and item["path"] == "Arena.jar"
+            )
+            self.assertEqual(
+                "https://github.com/tenP0312-dev/oraja/releases/download/"
+                f"test-1.0.1-{lane}/Arena-oraja.jar",
+                current["url"],
+            )
+
+    def test_duplicate_asset_name_is_rejected_only_within_the_same_release_target(self) -> None:
+        spec_path = self._write_spec(external=True, platform_releases=True)
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        macos = spec["platforms"][1]["artifacts"][0]
+        macos["release_tag"] = "test-1.0.1-windows-x86-64"
+        spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+        with self.assertRaisesRegex(ManifestError, "duplicate release asset target"):
+            prepare_release(
+                spec_path=spec_path,
+                base_archive=self.archive,
+                private_key_path=self.private_path,
+                public_key_path=self.public_path,
+                output_dir=self.root / "must-not-exist-duplicate-target",
+            )
 
     def test_base_audit_failure_leaves_no_partial_output(self) -> None:
         (self.base / "unsigned-extra.txt").write_text("extra", encoding="utf-8")
