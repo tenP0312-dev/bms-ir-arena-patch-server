@@ -296,11 +296,13 @@ repository; moving the download destination does not move the code.
   Preserve existing signed historical locations; do not rewrite old releases
   or replace binaries as part of this documentation change.
 
-Status: documentation only (oraja#355 / patch-server#59). The oraja build helper
-still generates oraja repository targets. Before the next authorized release,
-implement and validate the target/spec changes, source-ZIP creation and upload,
-and direct download links. This MD update does not publish artifacts, promote
-a channel, or claim that the existing releases have migrated.
+For source ZIPs, `standalone_release_assets` accepts objects containing `path`,
+`repository` and `release_tag`, as well as legacy string paths targeting the
+metadata release. Use one object per OS release. The generated state records
+each target and exact identity without adding the ZIP to the installed manifest.
+Duplicate upload targets are rejected. The oraja build helper stages the source
+ZIP from the exact committed body and pinned submodules. Existing signed
+historical releases and locations remain unchanged.
 
 Create every checked pre-release named by `release-state.json`, after applying
 the body binary and source distribution policy below. The two body releases

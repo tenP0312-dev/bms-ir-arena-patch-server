@@ -181,6 +181,36 @@ class TransactionalReleaseTest(unittest.TestCase):
         path.write_text(json.dumps(spec), encoding="utf-8")
         return path
 
+    def test_source_attachments_are_targeted_without_installing_them(self) -> None:
+        path = self._write_spec(external=True)
+        spec = json.loads(path.read_text())
+        archive = self.root / "Arena-oraja-source.zip"
+        archive.write_bytes(b"reviewed source archive")
+        spec["standalone_release_assets"] = [
+            {"path": str(archive), "repository": "tenP0312-dev/bms-ir-arena-patch-server",
+             "release_tag": f"test-1.0.1-{lane}"}
+            for lane in ("windows-x86-64", "macos-aarch64")
+        ]
+        path.write_text(json.dumps(spec))
+        state_path = prepare_release(
+            spec_path=path, base_archive=self.archive,
+            private_key_path=self.private_path, public_key_path=self.public_path,
+            output_dir=self.root / "prepared-sources",
+        )
+        state = json.loads(state_path.read_text())
+        sources = [item for item in state["release_uploads"] if item["role"] == "standalone_opt_in"]
+        self.assertEqual(2, len(sources))
+        self.assertNotEqual(sources[0]["release_tag"], sources[1]["release_tag"])
+        for platform in state["platforms"]:
+            self.assertNotIn("Arena-oraja-source.zip", [item["path"] for item in platform["artifacts"]])
+        spec["standalone_release_assets"].append(spec["standalone_release_assets"][0])
+        path.write_text(json.dumps(spec))
+        with self.assertRaisesRegex(ManifestError, "duplicated"):
+            prepare_release(spec_path=path, base_archive=self.archive,
+                            private_key_path=self.private_path, public_key_path=self.public_path,
+                            output_dir=self.root / "duplicate-sources")
+        self.assertFalse((self.root / "duplicate-sources").exists())
+
     def test_prepares_clean_delta_and_state_with_delta_only_default(self) -> None:
         output = self.root / "prepared"
         state_path = prepare_release(

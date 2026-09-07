@@ -239,10 +239,19 @@ def _read_spec(path: Path) -> dict[str, Any]:
     ):
         raise ManifestError("server_gate.build_hash does not match source_commits.oraja")
     standalone = spec.get("standalone_release_assets", [])
-    if not isinstance(standalone, list) or any(
-        not isinstance(item, str) or not item.strip() for item in standalone
-    ):
-        raise ManifestError("standalone_release_assets must be a string array")
+    if not isinstance(standalone, list):
+        raise ManifestError("standalone_release_assets must be an array")
+    for item in standalone:
+        if isinstance(item, str) and item.strip():
+            continue
+        if not isinstance(item, dict) or set(item) != {"path", "repository", "release_tag"}:
+            raise ManifestError("standalone asset requires path, repository and release_tag")
+        path = _text(item.get("path"), "standalone asset path")
+        release_asset_url(
+            _text(item.get("repository"), "standalone repository"),
+            _text(item.get("release_tag"), "standalone release_tag"),
+            Path(path).name,
+        )
     if "plugin_required" in server_gate and not isinstance(
         server_gate["plugin_required"], bool
     ):
@@ -638,12 +647,22 @@ def prepare_release(
             }
         ]
         for value in spec.get("standalone_release_assets", []):
-            path = _resolve(spec_dir, value, "standalone_release_assets")
+            target = ({"repository": value["repository"], "release_tag": value["release_tag"]}
+                      if isinstance(value, dict) else {})
+            path = _resolve(spec_dir, value["path"] if isinstance(value, dict) else value, "standalone_release_assets")
             if not path.is_file():
                 raise ManifestError(f"standalone release asset is missing: {path}")
             release_uploads.append(
-                {"role": "standalone_opt_in", **_file_identity(path)}
+                {"role": "standalone_opt_in", **_file_identity(path), **target}
             )
+
+        targets = [(
+            str(item.get("repository", spec.get("artifact_repository", ""))).casefold(),
+            str(item.get("release_tag", spec["release_tag"])).casefold(),
+            str(item.get("asset_name", Path(str(item["path"])).name)).casefold(),
+        ) for item in release_uploads]
+        if len(targets) != len(set(targets)):
+            raise ManifestError("release upload targets are duplicated")
 
         state = {
             "schema_version": 1,
