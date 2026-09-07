@@ -39,6 +39,13 @@ repository. Read the tests around any behavior being changed.
 
 ## Publication Boundary
 
+- Follow README's `Body binary and source distribution policy` (2026-09-07):
+  host both `Arena-oraja.jar` and the matching `Arena-oraja-source.zip` on
+  this repository's OS-specific Releases. Automatic GitHub source archives
+  contain patch-server code and do not satisfy body source distribution.
+  The previous oraja-hosted release policy is superseded; tooling migration
+  remains required before the next publication.
+
 Repository implementation and merge do not authorize publishing a manifest,
 promoting a channel, revoking a version, rotating a key, or releasing binaries.
 Development progress notes are approval-free, but cannot authorize or replace
