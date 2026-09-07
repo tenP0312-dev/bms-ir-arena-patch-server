@@ -219,8 +219,8 @@ String entries in `platforms[].artifacts` retain the legacy Pages-relative
 layout. Object entries name an `asset_name` on the release and an explicit
 `retain_on_pages` compatibility decision. By default they use the spec's
 `artifact_repository` and `release_tag`. An entry may instead provide both
-`release_repository` and `release_tag`; this is used for the two canonical
-`tenP0312-dev/oraja` OS releases, whose assets are each named exactly
+`release_repository` and `release_tag`; under the 2026-09-07 policy these target
+the two OS releases in `tenP0312-dev/bms-ir-arena-patch-server`, whose body assets are each named exactly
 `Arena-oraja.jar`. Asset names must be unique within one repository/tag target,
 but the same name is valid on distinct targets. After the launcher-first
 migration, normal releases use `false`; `true` is reserved for a deliberately
@@ -265,10 +265,48 @@ versioned manifest, and only retained compatibility files. External payloads
 remain separate Release assets. The output must be outside `dist/` so it cannot
 contaminate the exact publication tree.
 
-Create every checked pre-release named by `release-state.json`. The two body
-releases must be created in `tenP0312-dev/oraja` with their OS-specific tags and
-the same reviewed oraja source commit as the target; GitHub's automatic source
-archives then contain the body source instead of this patch-server source.
+### Body binary and source distribution policy
+
+The operator decision on 2026-09-07 supersedes the oraja-hosted body release
+procedure introduced by oraja#313/#314 and patch-server#57/#58. Both the actual
+body binary and corresponding source ZIP belong on this patch-server
+repository's GitHub Releases. `tenP0312-dev/oraja` remains the canonical code
+repository; moving the download destination does not move the code.
+
+- Use `test-<version>-windows-x86-64` and `test-<version>-macos-aarch64` here.
+  Each OS release attaches `Arena-oraja.jar` and `Arena-oraja-source.zip`.
+  Keep version and OS in the release title/tag, not in the public JAR filename.
+- Build the source ZIP from the exact reviewed oraja commit used for both
+  binaries, including pinned submodule source, build files and license notices.
+  Record the body commit, submodule revisions and source ZIP SHA-256 in public
+  source provenance. Exclude credentials, player data, logs and local output.
+- Inspect the ZIP before upload: it must contain the body Java sources,
+  including `core/src/bms/player/beatoraja/MainController.java`, and the build
+  tree, not the patch-server source tree. Verify the uploaded ZIP and JAR size
+  and hash against the reviewed artifacts. Compressed source size need not
+  equal the executable JAR size.
+- Link the explicit JAR and source ZIP assets in each release description,
+  with OS, version and body commit. GitHub's automatic `Source code (zip)` and
+  `Source code (tar.gz)` here are patch-server archives and must be clearly
+  distinguished from the attached body source ZIP. A patch-server release tag
+  does not itself identify the oraja build commit.
+- The channel metadata/delta release stays here and links both OS releases.
+  Signed body locations must point to the corresponding patch-server asset;
+  the source ZIP is a download attachment, not a launcher-installed artifact.
+  Preserve existing signed historical locations; do not rewrite old releases
+  or replace binaries as part of this documentation change.
+
+Status: documentation only (oraja#355 / patch-server#59). The oraja build helper
+still generates oraja repository targets. Before the next authorized release,
+implement and validate the target/spec changes, source-ZIP creation and upload,
+and direct download links. This MD update does not publish artifacts, promote
+a channel, or claim that the existing releases have migrated.
+
+Create every checked pre-release named by `release-state.json`, after applying
+the body binary and source distribution policy below. The two body releases
+must be created in `tenP0312-dev/bms-ir-arena-patch-server` with OS-specific tags
+and explicit body source ZIP attachments. Do not use GitHub's automatic source
+archive as the body source or accept stale oraja publication targets.
 Upload each external artifact to its recorded repository/tag, upload the small
 delta to the patch-server release, then manually dispatch
 `Deploy signed test-channel delta`:
