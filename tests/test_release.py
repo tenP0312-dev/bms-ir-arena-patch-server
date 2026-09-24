@@ -59,7 +59,7 @@ class TransactionalReleaseTest(unittest.TestCase):
     def _seed_platform(self, platform: str) -> None:
         source = self.root / f"seed-{platform}"
         source.mkdir()
-        (source / "Arena.jar").write_bytes(f"old-{platform}".encode())
+        (source / "Arena-oraja.jar").write_bytes(f"old-{platform}".encode())
         args = type(
             "Args",
             (),
@@ -81,7 +81,7 @@ class TransactionalReleaseTest(unittest.TestCase):
                 "bootstrap_manifest": None,
                 "bootstrap_archive": None,
                 "bootstrap_url": None,
-                "artifact": ["Arena.jar"],
+                "artifact": ["Arena-oraja.jar"],
                 "published_at": "2026-08-15T00:00:00Z",
             },
         )()
@@ -233,7 +233,7 @@ class TransactionalReleaseTest(unittest.TestCase):
         self.assertTrue(
             (
                 output
-                / "publication/channels/test/windows-x64/releases/1.0.0/Arena.jar"
+                / "publication/channels/test/windows-x64/releases/1.0.0/Arena-oraja.jar"
             ).is_file()
         )
 
@@ -333,6 +333,87 @@ class TransactionalReleaseTest(unittest.TestCase):
             public_key_path=self.public_path,
             output_dir=self.root / "prepared-plugin-only",
         )
+
+    def test_prepares_optional_plugin_only_release_with_existing_body_gate(self) -> None:
+        spec_path = self._write_spec(external=True)
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        spec["release_kind"] = "plugin-only"
+        spec["server_gate"]["client_version"] = "1.0.0"
+        spec["server_gate"]["plugin_required"] = True
+        for platform in spec["platforms"]:
+            source = Path(platform["source"])
+            (source / "ir").mkdir(exist_ok=True)
+            (source / "ir/bms_ir_arena_oraja_0.0.77.jar").write_bytes(b"plugin-0.0.77")
+            platform_name = platform["platform"]
+            asset_name = f"bms_ir_arena_oraja_0.0.77-{platform_name}.jar"
+            platform["artifacts"] = [
+                {
+                    "path": "ir/bms_ir_arena_oraja_0.0.77.jar",
+                    "asset_name": asset_name,
+                    "retain_on_pages": False,
+                }
+            ]
+        spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+        output = self.root / "prepared-plugin-only-existing-body-gate"
+        state_path = prepare_release(
+            spec_path=spec_path,
+            base_archive=self.archive,
+            private_key_path=self.private_path,
+            public_key_path=self.public_path,
+            output_dir=output,
+        )
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("plugin-only", state["release_kind"])
+        self.assertEqual("1.0.0", state["server_gate"]["client_version"])
+        self.assertTrue(state["server_gate"]["plugin_required"])
+        self.assertFalse((output / "publication/channels/test/windows-x64/releases/1.0.1/Arena.jar").exists())
+        self.assertEqual(3, len(state["release_uploads"]))
+
+    def test_plugin_only_requires_plugin_gate(self) -> None:
+        spec_path = self._write_spec()
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        spec["release_kind"] = "plugin-only"
+        spec["server_gate"]["client_version"] = "1.0.0"
+        spec["server_gate"]["plugin_required"] = False
+        for platform in spec["platforms"]:
+            source = Path(platform["source"])
+            (source / "ir").mkdir(exist_ok=True)
+            (source / "ir/bms_ir_arena_oraja_0.0.77.jar").write_bytes(b"plugin")
+            platform["artifacts"] = ["ir/bms_ir_arena_oraja_0.0.77.jar"]
+        spec_path.write_text(json.dumps(spec), encoding="utf-8")
+        with self.assertRaisesRegex(ManifestError, "require server_gate.plugin_required"):
+            prepare_release(
+                spec_path=spec_path,
+                base_archive=self.archive,
+                private_key_path=self.private_path,
+                public_key_path=self.public_path,
+                output_dir=self.root / "invalid-plugin-only",
+            )
+
+    def test_plugin_only_gate_must_match_current_body_release(self) -> None:
+        spec_path = self._write_spec()
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        spec["release_kind"] = "plugin-only"
+        spec["server_gate"].update(
+            {"client_version": "0.9.9", "plugin_required": True}
+        )
+        for platform in spec["platforms"]:
+            source = Path(platform["source"])
+            (source / "ir").mkdir(exist_ok=True)
+            (source / "ir/bms_ir_arena_0.0.77.jar").write_bytes(b"plugin")
+            platform["artifacts"] = ["ir/bms_ir_arena_0.0.77.jar"]
+        spec_path.write_text(json.dumps(spec), encoding="utf-8")
+        output = self.root / "invalid-plugin-only-gate-version"
+        with self.assertRaisesRegex(ManifestError, "match the current Arena body"):
+            prepare_release(
+                spec_path=spec_path,
+                base_archive=self.archive,
+                private_key_path=self.private_path,
+                public_key_path=self.public_path,
+                output_dir=output,
+            )
+        self.assertFalse(output.exists())
 
     def test_rejects_wrong_private_key_before_creating_output(self) -> None:
         wrong = Ed25519PrivateKey.generate()
