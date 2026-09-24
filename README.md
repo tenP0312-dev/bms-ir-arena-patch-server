@@ -215,6 +215,15 @@ repository, release tag, path, and artifact identity plus the exact GitHub
 workflow inputs. A failed key check,
 draft, location check, audit, or delta build leaves no reusable partial output.
 
+For an optional plugin-only test update, set `"release_kind": "plugin-only"`,
+advance the manifest version (for example `0.4.14.88.1`), keep
+`server_gate.client_version` and `build_hash` bound to the currently supported
+Arena body, and set `server_gate.plugin_required` to true. Include exactly one
+`ir/bms_ir*.jar` for each platform. Keep `plugin_mandatory` false unless a
+mandatory installation has been separately authorized. The generated state
+marks the release as plugin-only so production staging can verify the existing
+body gate and add only the exact plugin allowlist entry.
+
 String entries in `platforms[].artifacts` retain the legacy Pages-relative
 layout. Object entries name an `asset_name` on the release and an explicit
 `retain_on_pages` compatibility decision. By default they use the spec's

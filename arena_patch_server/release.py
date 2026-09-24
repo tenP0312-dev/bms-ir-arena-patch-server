@@ -133,6 +133,9 @@ def _read_spec(path: Path) -> dict[str, Any]:
         raise ManifestError("unsupported release spec schema")
     if spec.get("channel") != "test":
         raise ManifestError("prepare-release currently supports only the test channel")
+    release_kind = spec.get("release_kind", "body")
+    if release_kind not in {"body", "plugin-only"}:
+        raise ManifestError("release_kind must be body or plugin-only")
     if "plugin_mandatory" in spec and not isinstance(spec["plugin_mandatory"], bool):
         raise ManifestError("plugin_mandatory must be boolean")
     _safe_name(spec.get("version"), "version")
@@ -215,6 +218,24 @@ def _read_spec(path: Path) -> dict[str, Any]:
         if bool(localized[0]) != bool(localized[1]):
             raise ManifestError("localized note files must be supplied together")
 
+    if release_kind == "plugin-only":
+        if seen != {"windows-x64", "macos-arm64"}:
+            raise ManifestError("plugin-only releases require both platforms")
+        for platform in platforms:
+            paths = {
+                str(item if isinstance(item, str) else item.get("path") or "")
+                for item in platform["artifacts"]
+            }
+            plugins = {
+                path for path in paths
+                if Path(path).parent.as_posix() == "ir"
+                and re.fullmatch(r"bms_ir_[A-Za-z0-9_.-]+\.jar", Path(path).name)
+            }
+            if len(plugins) != 1 or paths != plugins:
+                raise ManifestError(
+                    "plugin-only releases require exactly one direct ir/bms_ir*.jar per platform"
+                )
+
     source_commits = _object(spec.get("source_commits"), "source_commits")
     if not source_commits or any(
         not str(key).strip()
@@ -226,8 +247,10 @@ def _read_spec(path: Path) -> dict[str, Any]:
     client_version = _text(
         server_gate.get("client_version"), "server_gate.client_version"
     )
-    if client_version != spec["version"]:
+    if release_kind == "body" and client_version != spec["version"]:
         raise ManifestError("server_gate.client_version must match the release version")
+    if release_kind == "plugin-only" and not server_gate.get("plugin_required"):
+        raise ManifestError("plugin-only releases require server_gate.plugin_required")
     build_hash = _text(server_gate.get("build_hash"), "server_gate.build_hash").lower()
     if not re.fullmatch(r"[0-9a-f]{7,64}", build_hash):
         raise ManifestError(
@@ -494,6 +517,31 @@ def prepare_release(
         if not base_pointers:
             raise ManifestError("base snapshot contains no channel pointers")
         audit_publication(publication, base_pointers, public_key_path)
+        if spec.get("release_kind", "body") == "plugin-only":
+            gate_version = str(spec["server_gate"]["client_version"])
+            for platform in spec["platforms"]:
+                current_path = (
+                    publication
+                    / "channels"
+                    / spec["channel"]
+                    / platform["platform"]
+                    / "manifest.json"
+                )
+                current = read_manifest(current_path)
+                if current.get("version") != gate_version:
+                    raise ManifestError(
+                        "plugin-only server gate must match the current Arena body version"
+                    )
+                body_paths = [
+                    item.get("path")
+                    for item in current.get("artifacts", [])
+                    if isinstance(item, dict)
+                    and item.get("path") == "Arena-oraja.jar"
+                ]
+                if len(body_paths) != 1:
+                    raise ManifestError(
+                        "plugin-only base release has no unique Arena body artifact"
+                    )
 
         published_at = str(spec.get("published_at") or timestamp())
         prepared_platforms: list[dict[str, object]] = []
@@ -668,6 +716,7 @@ def prepare_release(
             "schema_version": 1,
             "status": "prepared",
             "channel": spec["channel"],
+            "release_kind": spec.get("release_kind", "body"),
             "version": spec["version"],
             "release_tag": spec["release_tag"],
             "published_at": published_at,
